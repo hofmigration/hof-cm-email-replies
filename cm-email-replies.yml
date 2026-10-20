@@ -1,0 +1,51 @@
+name: CM email replies
+
+on:
+  schedule:
+    # 06:00 UTC = 11:00 AM Pakistan time, every day. GitHub sometimes starts scheduled
+    # runs a few minutes late; the report still covers 11:00 to 11:00 exactly.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      send_email:
+        description: "Email the report?"
+        required: true
+        type: choice
+        default: "true"
+        options: ["true", "false"]
+      as_of:
+        description: "Re-run an earlier morning's report (YYYY-MM-DD). Leave blank for today."
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: cm-email-replies
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
+      - name: Check the rules still work
+        run: node selftest.js
+      - name: Build and send the report
+        run: node report.js
+        env:
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          RESEND_KEY: ${{ secrets.RESEND_KEY }}
+          SEND_EMAIL: ${{ inputs.send_email }}
+          AS_OF: ${{ inputs.as_of }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cm-email-replies
+          path: out/
+          retention-days: 7
+          if-no-files-found: ignore
