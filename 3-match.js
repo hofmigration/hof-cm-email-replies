@@ -35,8 +35,10 @@ function connected(call) {
   return Number(p.hs_call_duration || 0) >= SETTINGS.CONNECTED_MIN_SECONDS * 1000;
 }
 
-// verdicts: on-time | call | late | none | waiting
-function judge(wait, { clock, now, calls = [] }) {
+// verdicts: on-time | call | whatsapp | late | none | waiting
+// whatsapp: what HOF sent the client on WhatsApp ([{ at, by, kind, preview, line }]), or null
+// when WhatsApp could not be checked for them
+function judge(wait, { clock, now, calls = [], whatsapp = null }) {
   const start = wait.emails[0].at;
   const due = clock.deadline(start);
   const replyAt = wait.reply ? wait.reply.at : null;
@@ -45,10 +47,15 @@ function judge(wait, { clock, now, calls = [] }) {
     .filter((c) => c.at >= start && c.at <= now).sort((a, b) => a.at - b.at);
   const callIn = conn.find((c) => c.at <= due) || null;
   const callAfter = conn.find((c) => c.at > due) || null;
+  // a WhatsApp from HOF after the client wrote: a text, a voice note or a file
+  const wa = (whatsapp || []).filter((m) => m.at >= start && m.at <= now).sort((a, b) => a.at - b.at);
+  const waIn = wa.find((m) => m.at <= due) || null;
+  const waAfter = wa.find((m) => m.at > due) || null;
 
   let verdict;
   if (replyAt !== null && replyAt <= due) verdict = "on-time";
   else if (callIn) verdict = "call";
+  else if (waIn) verdict = "whatsapp";
   else if (replyAt !== null) verdict = "late";
   else if (now > due) verdict = "none";
   else verdict = "waiting";
@@ -57,7 +64,7 @@ function judge(wait, { clock, now, calls = [] }) {
   const chaseMs = 2 * HOUR;
   const chased = wait.emails.slice(1).filter((e) => (replyAt === null || e.at < replyAt) && clock.workingBetween(start, e.at) >= chaseMs).length;
   return {
-    start, due, replyAt, callIn, callAfter, verdict, chased,
+    start, due, replyAt, callIn, callAfter, waIn, waAfter, waChecked: whatsapp !== null, verdict, chased,
     workMs: clock.workingBetween(start, end),
     overMs: verdict === "late" || verdict === "none" ? clock.workingBetween(due, end) : 0,
     leftMs: verdict === "waiting" ? Math.max(0, due - now) : 0,
@@ -67,7 +74,7 @@ function judge(wait, { clock, now, calls = [] }) {
 
 // Which section of today's report each wait belongs to.
 //   due      — its 24 hours ended between yesterday's cut-off and today's
-//   still    — due before that, and still no email and no connected call at all
+//   still    — due before that, and still no email, no connected call and no WhatsApp at all
 //   next     — not due yet, nobody has answered
 function sortOut(rows, window, now) {
   const inWin = (r) => r.due > window.start && r.due <= window.end;
@@ -78,9 +85,10 @@ function sortOut(rows, window, now) {
     due,
     onTime: due.filter((r) => r.verdict === "on-time").sort(byCm),
     call: due.filter((r) => r.verdict === "call").sort(byCm),
+    whatsapp: due.filter((r) => r.verdict === "whatsapp").sort(byCm),
     late: due.filter((r) => r.verdict === "late").sort((a, b) => complaintFirst(a, b) || b.overMs - a.overMs),
     none: due.filter((r) => r.verdict === "none").sort((a, b) => complaintFirst(a, b) || b.overMs - a.overMs),
-    still: rows.filter((r) => r.due <= window.start && r.start >= now - SETTINGS.STILL_OPEN_DAYS * DAY && r.replyAt === null && !r.callIn && !r.callAfter)
+    still: rows.filter((r) => r.due <= window.start && r.start >= now - SETTINGS.STILL_OPEN_DAYS * DAY && r.replyAt === null && !r.callIn && !r.callAfter && !r.waIn && !r.waAfter)
       .sort((a, b) => a.start - b.start),
     next: rows.filter((r) => r.due > window.end && r.verdict === "waiting").sort((a, b) => a.due - b.due),
   };
@@ -91,14 +99,14 @@ function perCaseManager(s) {
   const names = Object.values(SETTINGS.CASE_MANAGERS);
   const count = (list, n) => list.filter((r) => r.cm === n).length;
   const lines = names.map((n) => {
-    const onTime = count(s.onTime, n), call = count(s.call, n), late = count(s.late, n), none = count(s.none, n);
+    const onTime = count(s.onTime, n), call = count(s.call, n), whatsapp = count(s.whatsapp || [], n), late = count(s.late, n), none = count(s.none, n);
     const judged = onTime + late + none;
-    return { cm: n, due: count(s.due, n), onTime, call, late, none, still: count(s.still, n), next: count(s.next, n),
+    return { cm: n, due: count(s.due, n), onTime, call, whatsapp, late, none, still: count(s.still, n), next: count(s.next, n),
       pct: judged ? Math.round((onTime / judged) * 100) : null };
   }).sort((a, b) => (b.none + b.late + b.still) - (a.none + a.late + a.still) || a.cm.localeCompare(b.cm));
   const sum = (k) => lines.reduce((t, l) => t + l[k], 0);
   const judged = sum("onTime") + sum("late") + sum("none");
-  const total = { cm: "All case managers", due: sum("due"), onTime: sum("onTime"), call: sum("call"), late: sum("late"), none: sum("none"),
+  const total = { cm: "All case managers", due: sum("due"), onTime: sum("onTime"), call: sum("call"), whatsapp: sum("whatsapp"), late: sum("late"), none: sum("none"),
     still: sum("still"), next: sum("next"), pct: judged ? Math.round((sum("onTime") / judged) * 100) : null };
   return { lines, total };
 }
@@ -110,8 +118,11 @@ function statusText(r, now) {
     case "on-time": return `Replied ${fmtWhen(r.replyAt)}${by(r.replyBy)} — ${span(r.workMs)}`;
     case "late": return `Replied ${fmtWhen(r.replyAt)}${by(r.replyBy)} — ${hrs(r.workMs)} working hrs, ${span(r.overMs)} over`;
     case "none": return `No reply yet — waiting ${span(r.workMs)}, ${span(r.overMs)} over` +
-      (r.callAfter ? `. A connected call came later, ${fmtWhen(r.callAfter.at)}${by(r.callAfter.by)}` : "");
+      (r.callAfter ? `. A connected call came later, ${fmtWhen(r.callAfter.at)}${by(r.callAfter.by)}` : "") +
+      (r.waAfter ? `. A WhatsApp ${r.waAfter.kind} came later, ${fmtWhen(r.waAfter.at)}${by(r.waAfter.by)}` : "");
     case "call": return `Connected call ${fmtWhen(r.callIn.at)}${by(r.callIn.by)}` +
+      (r.replyAt ? ` · email reply came later, ${fmtWhen(r.replyAt)}` : " · no email reply yet");
+    case "whatsapp": return `WhatsApp ${r.waIn.kind} ${fmtWhen(r.waIn.at)}${by(r.waIn.by)}` +
       (r.replyAt ? ` · email reply came later, ${fmtWhen(r.replyAt)}` : " · no email reply yet");
     case "waiting": return r.due < now ? "Past the 24 hours since the cut-off" : `${span(r.leftMs)} left`;
     default: return "";
