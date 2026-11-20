@@ -5,6 +5,6 @@
   "description": "Every morning at 11: client emails to the case managers that were not answered within 24 hours.",
   "type": "commonjs",
   "engines": { "node": ">=18" },
-  "dependencies": { "exceljs": "^4.4.0" },
+  "dependencies": { "exceljs": "^4.4.0", "libphonenumber-js": "^1.11.0" },
   "scripts": { "start": "node report.js", "test": "node selftest.js" }
 }
