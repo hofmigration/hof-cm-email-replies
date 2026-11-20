@@ -219,13 +219,20 @@ check("addresses are read from a To line", M.addresses("Ali <ALI@x.com>; b@y.co.
   const h2 = buildEmail({ window, sections: sec([], [lateRow]), byCm: M.perCaseManager(sec([], [lateRow])), notCountedToday: 0 });
   check("an action that did get a reply is not marked", !/Action needed: the client asked/.test(h2));
   const waRow = { ...row(3, "whatsapp"), verdict: "whatsapp", status: "WhatsApp voice note Mon 19 Oct, 18:00 by Warda Badar · no email reply yet",
-    waIn: { at: PKT("2026-10-19T18:00"), by: "Warda Badar", kind: "voice note", preview: "", line: "Warda" } };
+    waIn: { at: PKT("2026-10-19T18:00"), by: "Warda Badar", kind: "voice note", preview: "", line: "HOF Migration" } };
   const secWa = { due: [waRow], onTime: [], call: [], whatsapp: [waRow], late: [], none: [], still: [], next: [] };
-  const meshOn = { used: true, on: true, clients: 1, byNumber: 1, byName: 0, notFound: 0, nameClash: 0, errors: 0, replies: 1 };
+  const meshOn = { used: true, on: true, lines: [{ name: "HOF Migration", phone: "+971 4 000 0000" }], since: PKT("2026-10-06T11:00"), chats: 40, messages: 900, hofMessages: 300,
+    clients: 1, byNumber: 1, byName: 0, notFound: 0, nameClash: 0, errors: 0, replies: 1, problems: [] };
   const hw = buildEmail({ window, sections: secWa, byCm: M.perCaseManager(secWa), notCountedToday: 0, mesh: meshOn });
-  check("the email has a section for emails answered on WhatsApp", /but answered on WhatsApp/.test(hw) && /A voice note \(not listened to\)/.test(hw) && /WhatsApp, no email/.test(hw));
+  check("the email has a section for emails answered on WhatsApp", /but answered on WhatsApp/.test(hw) && /A voice note \(not listened to\)/.test(hw) && /WhatsApp, no email/.test(hw) && /on HOF Migration/.test(hw));
+  check("the email says which WhatsApp number was read, and that case managers' own numbers are not",
+    /on the HOF Migration WhatsApp number\)/.test(hw) && /read on the HOF Migration WhatsApp number only; a WhatsApp from any other number, such as a case manager's own, is not seen/.test(hw));
   const hOff = buildEmail({ window, sections: secWa, byCm: M.perCaseManager(secWa), notCountedToday: 0, mesh: { ...meshOn, on: false, why: "the MESH_API_KEY secret is not set" } });
   check("when Mesh could not be read, the email says WhatsApp was not checked", /WhatsApp was not checked today:<\/b> the MESH_API_KEY secret is not set/.test(hOff));
+  const hPart = buildEmail({ window, sections: secWa, byCm: M.perCaseManager(secWa), notCountedToday: 0, mesh: { ...meshOn, problems: ["Key 2 of 2: Mesh refused the MESH_API_KEY"] } });
+  check("when one of several numbers could not be read, the email says so", /Part of WhatsApp could not be read:<\/b> Key 2 of 2/.test(hPart));
+  const img = buildEmail({ window, sections: { ...secWa, whatsapp: [{ ...waRow, waIn: { ...waRow.waIn, kind: "image" } }] }, byCm: M.perCaseManager(secWa), notCountedToday: 0, mesh: meshOn });
+  check("an image is 'An image', not 'A image'", /An image/.test(img) && !/A image/.test(img));
   const whole = { ...row(2, "none"), words: "Please call me tomorrow.", ask: "Please call me tomorrow." };
   const h3 = buildEmail({ window, sections: sec([whole], []), byCm: M.perCaseManager(sec([whole], [])), notCountedToday: 0 });
   check("an action that is the whole email is not quoted twice", (h3.match(/Please call me tomorrow/g) || []).length === 1 && /Action needed/.test(h3));
@@ -249,98 +256,179 @@ check("addresses are read from a To line", M.addresses("Ali <ALI@x.com>; b@y.co.
     check("the sheet shows the action the client asked for, and says to confirm it",
       colOf(fl, "Action the client asked for") > 0 && fl.getRow(4).getCell(colOf(fl, "Action the client asked for")).value === "Kindly review the letters." &&
       /confirm it to the client/.test(String(fl.getRow(4).getCell(colOf(fl, "Notes")).value)));
-    const rw = { ...r1, verdict: "whatsapp", waIn: { at: PKT("2026-10-19T18:00"), by: "Warda Badar", kind: "voice note", preview: "", line: "Warda" }, waChecked: true, waFound: "number" };
+    const rw = { ...r1, verdict: "whatsapp", waIn: { at: PKT("2026-10-19T18:00"), by: "Warda Badar", kind: "voice note", preview: "", line: "HOF Migration" }, waChecked: true, waFound: "number" };
     const s2 = { due: [rw], onTime: [], call: [], whatsapp: [rw], late: [], none: [], still: [], next: [] };
     const wb2 = await buildWorkbook({ window, sections: s2, byCm: M.perCaseManager(s2), intake: [], notCountedToday: 0, missingYears: [],
-      mesh: { used: true, on: true, clients: 3, byNumber: 2, byName: 0, notFound: 1, nameClash: 0, errors: 0, replies: 1 } });
+      mesh: { used: true, on: true, lines: [{ name: "HOF Migration", phone: "+971 4 000 0000" }], since: PKT("2026-10-06T11:00"), chats: 40, messages: 900, hofMessages: 300,
+        clients: 3, byNumber: 2, byName: 0, notFound: 1, nameClash: 0, errors: 0, replies: 1, problems: [] } });
     const wt = wb2.getWorksheet("WhatsApp, no email");
-    check("the sheet lists emails answered on WhatsApp, with what was sent",
-      wt.getRow(4).getCell(colOf(wt, "WhatsApp sent by")).value === "Warda Badar" && wt.getRow(4).getCell(colOf(wt, "WhatsApp message")).value === "A voice note" &&
-      wt.getRow(4).getCell(7).value === "WhatsApp, no email in 24h");
+    check("the sheet lists emails answered on WhatsApp, with what was sent and on which number",
+      wt.getRow(4).getCell(colOf(wt, "WhatsApp sent by")).value === "Warda Badar (on HOF Migration)" && wt.getRow(4).getCell(colOf(wt, "WhatsApp message")).value === "A voice note" &&
+      wt.getRow(4).getCell(7).value === "WhatsApp, no email in 24h", `${wt.getRow(4).getCell(colOf(wt, "WhatsApp sent by")).value}`);
     const how = wb2.getWorksheet("How it was checked").getColumn(1).values.join(" ");
-    check("the sheet says how many clients were looked up in Mesh", /3 clients looked up in Mesh — 2 found by phone number/.test(how));
+    check("the sheet says which number was read, and how many clients were found", /read WhatsApp on HOF Migration \(\+971 4 000 0000\): 40 chats and 900 messages/.test(how) &&
+      /3 clients looked up — 2 found by phone number/.test(how) && /such as a case manager's own, is not seen/.test(how));
+    const rn = { ...r1, waFound: "none" };
+    const s3 = { due: [rn], onTime: [], call: [], late: [], none: [rn], still: [], next: [] };
+    const wb3 = await buildWorkbook({ window, sections: s3, byCm: M.perCaseManager(s3), intake: [], notCountedToday: 0, missingYears: [] });
+    const f3 = wb3.getWorksheet("Flagged");
+    check("a flagged client with no WhatsApp chat says so", /No WhatsApp chat with this client on the number Mesh checks/.test(String(f3.getRow(4).getCell(colOf(f3, "Notes")).value)));
   } catch (e) { check("the sheet builds", false, e.message); }
 
   // ---------------------------------------------------------------- WhatsApp, against a pretend Mesh
+  // A pretend Compliance Read API, built from Mesh's own documentation: /channel,
+  // /conversations?updatedSince, /messages?since, pages with nextCursor, 401 / 422 / 429 / 503.
   {
     const Mesh = require("./6-mesh");
-    const realFetch = global.fetch, realKey = process.env.MESH_API_KEY;
+    const realFetch = global.fetch, realKey = process.env.MESH_API_KEY, realRps = SETTINGS.MESH_RPS;
+    SETTINGS.MESH_RPS = 1000;
+    Object.assign(Mesh.timing, { tooMany: 1, busy: 1, network: 1 });
+    const API = "/api/compliance-feed/v1";
+    const iso = (at) => new Date(typeof at === "number" ? at : PKT(at)).toISOString();
     const json = (status, obj) => ({ ok: status < 300, status, text: async () => JSON.stringify(obj) });
-    const conv = (id, contactId, phone, name, line, last = "2026-10-20T12:00:00Z") => ({ id, contact: { id: contactId, displayName: name, phoneE164: phone }, channel: { name: line }, lastMessageAt: last });
-    const msg = (id, at, extra = {}) => ({ id, sentAt: new Date(PKT(at)).toISOString(), direction: "outbound", kind: "message", status: "read", text: "Hi, the letters are ready.",
-      parts: [{ type: "text" }], attachments: [], sender: { type: "user", user: { name: "Warda Badar", email: "warda@hofmigration.com" } }, ...extra });
-    const hourly = Array.from({ length: 100 }, (_, i) => msg(`n${i}`, new Date(PKT("2026-10-20T12:00") - i * 3600e3 + 5 * 3600e3).toISOString().slice(0, 16))).reverse();
-    const world = {
-      accepts: "x-api-key", requests: [],
-      convs: [conv("cv1", "p1", "+971501234567", "Sara Khan", "Warda"), conv("cv2", "p2", "+97150123456789", "Someone Else", "Brenda"),
-        conv("cv3", "p1", "+971501234567", "Sara Khan", "Migration Team"), conv("cv4", "p3", "+966551752664", "Omar Ali", "Tamjeed"),
-        conv("cv5", "p4", "+971559999999", "Fatima Noor", "HOF Migration"), conv("cv6", "p5", "+971558888888", "Fatima Noor", "HOF Migration"),
-        conv("cv7", "p6", "+971557777777", "Imran Shah", "Rahima")],
-      msgs: {
-        cv1: [msg("m1", "2026-10-19T09:00"), msg("m2", "2026-10-19T16:00", { direction: "inbound", sender: { type: "contact" } }), msg("m3", "2026-10-19T17:00", { kind: "note", isPrivate: true }),
-          msg("m4", "2026-10-19T18:00", { text: null, parts: [{ type: "audio" }], attachments: [{ kind: "audio" }] }), msg("m5", "2026-10-19T19:00", { sender: { type: "bot" } })],
-        cv3: [msg("m6", "2026-10-20T08:00", { status: "failed" }), msg("m7", "2026-10-20T09:30", { sender: { type: "user", user: { name: "Maryam Chand" } } })],
-        cv4: [msg("m8", "2026-10-20T10:00")], cv5: [], cv6: [], cv7: hourly,
+    const conv = (id, contactId, phone, name, updated = "2026-10-20T12:00") => ({ id, number: 1, status: "open", contact: { id: contactId, name, phone },
+      messageCount: 3, createdAt: iso("2026-09-01T10:00"), updatedAt: iso(updated), lastMessageAt: iso(updated), lastInboundAt: null, hiddenInInboxAt: null, clearedInInboxAt: null });
+    const msg = (id, conversationId, at, extra = {}) => ({ id, conversationId, direction: "outbound", kind: "message", status: "read", sentAt: iso(at),
+      sender: { type: "user", name: "Warda Badar", email: "warda@hofmigration.com" }, text: "Hi, the letters are ready.", parts: [{ type: "text", text: "Hi, the letters are ready." }],
+      campaign: null, replyToId: null, attachments: [], error: null, deleted: null, ...extra });
+    const voice = { text: null, parts: [{ type: "audio" }], attachments: [{ fileName: "voice.ogg", mimeType: "audio/ogg; codecs=opus", sizeBytes: 9000, durationMs: 12000, url: "https://example.invalid/v", urlExpiresAt: iso("2026-10-19T18:10"), transcript: null }] };
+    const lines = {
+      KEY: {
+        channel: { id: "ch1", name: "HOF Migration", phoneNumber: "+971 4 000 0000", brand: "HOF Migration" },
+        convs: [conv("cv1", "p1", "+971501234567", "Sara Khan"), conv("cv2", "p2", "+97150123456789", "Someone Else"), conv("cv4", "p3", "+966551752664", "Omar Ali"),
+          conv("cv5", "p4", "+971559999999", "Fatima Noor"), conv("cv6", "p5", "+971558888888", "Fatima Noor"), conv("cv7", "p6", "+971557777777", "Imran Shah"),
+          conv("cv8", "p7", "+971556666666", "Old Chat", "2026-09-01T10:00")],
+        msgs: [
+          msg("m1", "cv1", "2026-10-19T09:00"),                                                  // before the email
+          msg("m2", "cv1", "2026-10-19T16:00", { direction: "inbound", sender: { type: "contact", name: "Sara Khan" } }),
+          msg("m3", "cv1", "2026-10-19T17:00", { kind: "note" }),
+          msg("m4", "cv1", "2026-10-19T18:00", voice),                                           // counts: a voice note
+          msg("m5", "cv1", "2026-10-19T19:00", { sender: { type: "system", name: "Bot" } }),
+          msg("m6", "cv1", "2026-10-19T19:30", { campaign: "Visa update" }),
+          msg("m7", "cv1", "2026-10-20T08:00", { status: "failed", error: "Message undeliverable" }),
+          msg("m8", "cv1", "2026-10-20T08:30", { status: "pending" }),
+          msg("m9", "cv1", "2026-10-20T09:00", { kind: "activity", text: "Assigned to Sara" }),
+          msg("m10", "cv1", "2026-10-20T09:30", { sender: { type: "system", name: "WhatsApp Business app (phone)" }, text: "Sure, I will check.", parts: [] }),   // counts: typed on the team phone
+          msg("m11", "cv1", "2026-10-20T09:40", { sender: { type: "system", name: "Automation" } }),
+          msg("m12", "cv1", "2026-10-20T09:50", { deleted: iso("2026-10-20T09:51") }),
+          msg("m13", "cv2", "2026-10-20T10:00"),
+          msg("m14", "cv4", "2026-10-20T10:00"),
+          msg("m15", "cv8", "2026-10-20T10:30", { sender: { type: "user", name: "Maryam Chand", email: "maryam@hofmigration.com" } }),   // a chat not listed as changed
+          ...Array.from({ length: 22 }, (_, i) => msg(`n${i}`, "cv7", PKT("2026-10-19T16:00") + i * 3600e3)),
+        ],
+      },
+      KEY2: {
+        channel: { id: "ch2", name: "Warda", phoneNumber: "+971 50 000 0002", brand: "HOF Migration" },
+        convs: [conv("w1", "q1", "+923001234567", "Bilal Ahmed")],
+        msgs: [msg("w1m1", "w1", "2026-10-20T11:00")],
       },
     };
+    const world = { accepts: "bearer", requests: [], status: 0, dropAfter: undefined, tooManyOnce: false, pageSize: 3 };
     global.fetch = async (url, opts = {}) => {
       const u = new URL(url), h = opts.headers || {};
-      world.requests.push(u.pathname);
-      const ok = world.accepts === "x-api-key" ? h["x-api-key"] === "KEY" : world.accepts === "bearer" ? h.Authorization === "Bearer KEY" : false;
-      if (world.dropAfter !== undefined && world.requests.length > world.dropAfter) return json(401, { message: "Unauthorized" });
-      if (!ok) return json(401, { message: "Unauthorized" });
-      if (u.pathname === "/api/conversations") {
-        const q = (u.searchParams.get("q") || "").toLowerCase(), cid = u.searchParams.get("contactId");
-        const list = world.convs.filter((c) => (!cid || c.contact.id === cid) && (!q || c.contact.phoneE164.replace(/\D/g, "").includes(q) || c.contact.displayName.toLowerCase().includes(q)));
-        const from = Number(u.searchParams.get("cursor") || 0), lim = Number(u.searchParams.get("limit") || 25);
-        return json(200, { items: list.slice(from, from + lim), nextCursor: from + lim < list.length ? String(from + lim) : null });
-      }
-      const mm = u.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
-      if (mm) {
-        let items = [...(world.msgs[decodeURIComponent(mm[1])] || [])].sort((a, b) => Date.parse(a.sentAt) - Date.parse(b.sentAt));
-        const before = u.searchParams.get("before"), lim = Number(u.searchParams.get("limit") || 40);
-        if (before) items = items.slice(0, items.findIndex((m) => m.id === before));
-        return json(200, { items: items.slice(-lim), hasMore: items.length > lim });
-      }
-      return json(404, { message: "no such page" });
+      world.requests.push(`${u.pathname}?${u.searchParams.toString()}`);
+      if (!u.pathname.startsWith(API)) return json(404, { message: `Cannot GET ${u.pathname}` });
+      if (world.status) return json(world.status, { message: "The API is switched off" });
+      if (world.tooManyOnce) { world.tooManyOnce = false; return json(429, { message: "Too many requests" }); }
+      if (world.dropAfter !== undefined && world.requests.length > world.dropAfter) return json(401, { message: "Invalid API key" });
+      const bearer = /^Bearer /.test(String(h.Authorization || "")) ? h.Authorization.slice(7) : null;
+      const line = lines[world.accepts === "bearer" ? bearer : world.accepts === "x-api-key" ? h["X-Api-Key"] : null];
+      if (!line) return json(401, { message: "Invalid API key" });
+      const p = u.pathname.slice(API.length);
+      if (p === "/channel") return json(200, line.channel);
+      const allowed = { "/conversations": ["updatedSince", "limit", "cursor"], "/messages": ["since", "limit", "cursor"] }[p];
+      if (!allowed) return json(404, { message: "That chat isn't on this number" });
+      const bad = [...u.searchParams.keys()].find((k) => !allowed.includes(k));
+      if (bad) return json(422, { message: `Unknown parameter: ${bad}` });
+      const lim = Number(u.searchParams.get("limit") || 50);
+      if (!(lim >= 1 && lim <= 200)) return json(422, { message: "limit must be 1-200" });
+      const since = Date.parse(u.searchParams.get(p === "/messages" ? "since" : "updatedSince") || "") || 0;
+      const list = p === "/messages"
+        ? line.msgs.filter((m) => Date.parse(m.sentAt) >= since).sort((a, b) => Date.parse(a.sentAt) - Date.parse(b.sentAt))
+        : line.convs.filter((c) => Date.parse(c.updatedAt) >= since).sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt));
+      const from = Number(u.searchParams.get("cursor") || 0), n = world.pageSize;
+      return json(200, { data: list.slice(from, from + n), nextCursor: from + n < list.length ? String(from + n) : null });
     };
     try {
       process.env.MESH_API_KEY = "KEY";
-      check("Mesh: the key is sent as x-api-key first", (await Mesh.start()) && Mesh.state.header === "x-api-key");
-      world.accepts = "bearer";
-      check("Mesh: …and as a Bearer token if x-api-key is refused", (await Mesh.start()) && Mesh.state.header === "Bearer token");
+      check("Mesh: the key is sent as a Bearer token, and the number it covers is named", (await Mesh.start()) && Mesh.state.header === "Bearer token" && Mesh.state.lines.map((l) => l.name).join() === "HOF Migration");
+      world.accepts = "x-api-key";
+      check("Mesh: …and as X-Api-Key if the Bearer token is refused", (await Mesh.start()) && Mesh.state.header === "X-Api-Key");
       world.accepts = "nothing";
-      check("Mesh: a refused key switches WhatsApp off for the run, and says why", !(await Mesh.start()) && /refused the MESH_API_KEY/.test(Mesh.state.why));
+      check("Mesh: a refused key switches WhatsApp off for the run, and says why",
+        !(await Mesh.start()) && /refused the MESH_API_KEY \(401/.test(Mesh.state.why) && (await Mesh.repliesTo({ numbers: [], name: "x" }, 0, 1)) === null, Mesh.state.why);
+      world.accepts = "bearer"; world.status = 503;
+      check("Mesh: an API that is switched off says so", !(await Mesh.start()) && /switched off or being set up/.test(Mesh.state.why), Mesh.state.why);
+      world.status = 0;
       delete process.env.MESH_API_KEY;
-      check("Mesh: no key, no WhatsApp check (and the report still goes out)", !(await Mesh.start()) && /not set/.test(Mesh.state.why) && (await Mesh.repliesTo({ numbers: [], name: "x" }, 0, 1)) === null);
-      process.env.MESH_API_KEY = "KEY"; world.accepts = "x-api-key"; await Mesh.start();
+      check("Mesh: no key, no WhatsApp check (and the report still goes out)", !(await Mesh.start()) && /not set/.test(Mesh.state.why));
+      process.env.MESH_API_KEY = ' "Bearer KEY" \n';
+      check("Mesh: a key pasted with \"Bearer\" or quotes around it still works", await Mesh.start());
+      check("Mesh: several keys in the secret are read one per line", Mesh.readKeys("KEY\nKEY2\n").join() === "KEY,KEY2" && Mesh.readKeys("Authorization: Bearer abc").join() === "abc");
 
+      process.env.MESH_API_KEY = "KEY"; await Mesh.start();
       const from = PKT("2026-10-19T15:00"), to = PKT("2026-10-21T11:00");
+      world.tooManyOnce = true;
+      const r0 = world.requests.length;
+      const loaded = await Mesh.load(from);
+      const pagesRead = world.requests.slice(r0).filter((x) => x.startsWith(`${API}/messages`)).length;
+      check("Mesh: chats and messages are read once, page by page, and 'too many requests' is waited out",
+        loaded && pagesRead > 5 && Mesh.state.messages === 36 && Mesh.state.chats === 7, `${Mesh.state.chats} chats, ${Mesh.state.messages} messages, ${pagesRead} pages, ${Mesh.state.why}`);
       const sara = await Mesh.repliesTo({ numbers: Mesh.numbersOf({ phone: "050 123 4567" }), name: "Sara Khan" }, from, to);
-      check("Mesh: the client is found by their HubSpot number, on every HOF line they talk to", sara.found && sara.how === "number");
-      check("Mesh: only HOF's real WhatsApps after the email count — a voice note, and a message from a shared line",
-        sara.replies.map((x) => `${x.kind}/${x.by}/${x.line}`).join(", ") === "voice note/Warda Badar/Warda, message/Maryam Chand/Migration Team",
+      check("Mesh: the client is found by their HubSpot number", sara.found && sara.how === "number");
+      check("Mesh: only HOF's real WhatsApps after the email count — a voice note, and a message typed on the team phone",
+        sara.replies.map((x) => `${x.kind}/${x.by}/${x.line}`).join(", ") === "voice note/Warda Badar/HOF Migration, message/WhatsApp Business app (phone)/HOF Migration",
         sara.replies.map((x) => `${x.kind}/${x.by}/${x.line}`).join(", "));
-      check("Mesh: a number that only starts the same is not the client", !world.requests.some((p) => p.includes("cv2")));
+      const exact = await Mesh.repliesTo({ numbers: Mesh.numbersOf({ phone: "+971 50 123 4567" }), name: "" }, from, to);
+      check("Mesh: a number that only starts the same is not the client", exact.replies.length === 2);
       const omar = await Mesh.repliesTo({ numbers: Mesh.numbersOf({ mobilephone: "0551752664" }), name: "Omar Ali" }, from, to);
       check("Mesh: a number saved without its country code still finds the client", omar.found && omar.how === "number" && omar.replies.length === 1);
       const byName = await Mesh.repliesTo({ numbers: Mesh.numbersOf({ phone: "+971500000001" }), name: "Omar  ALI" }, from, to);
-      check("Mesh: no number match -> the HubSpot name, when exactly one Mesh contact has it", byName.found && byName.how === "name");
+      check("Mesh: no number match -> the HubSpot name, when exactly one WhatsApp contact has it", byName.found && byName.how === "name" && byName.replies.length === 1);
       const clash = await Mesh.repliesTo({ numbers: [], name: "Fatima Noor" }, from, to);
-      check("Mesh: two Mesh contacts with the same name -> not guessed", !clash.found && clash.clash);
+      check("Mesh: two WhatsApp contacts with the same name -> not guessed", !clash.found && clash.clash);
       const single = await Mesh.repliesTo({ numbers: [], name: "Imran" }, from, to);
-      check("Mesh: a first name alone is never searched", !single.found && !single.clash);
-      const before = world.requests.filter((p) => p.endsWith("/messages")).length;
+      check("Mesh: a first name alone is never matched", !single.found && !single.clash);
       const imran = await Mesh.repliesTo({ numbers: Mesh.numbersOf({ hs_whatsapp_phone_number: "+971 55 777 7777" }), name: "Imran Shah" }, from, to);
-      const pages = world.requests.filter((p) => p.endsWith("/messages")).length - before;
-      check(`Mesh: messages are read back only as far as the client's email (${pages} page)`, imran.replies.length === 22 && pages === 1, `${imran.replies.length} replies, ${pages} pages`);
-      world.dropAfter = world.requests.length;
-      check("Mesh: a key that stops working mid-run turns WhatsApp off, never the report", (await Mesh.repliesTo({ numbers: Mesh.numbersOf({ phone: "0501234567" }), name: "" }, from, to)) === null && !Mesh.state.on && /stopped accepting/.test(Mesh.state.why));
-      check("Mesh: a reply is a real message from a person", Mesh.replyOf(msg("x", "2026-10-19T18:00")) && !Mesh.replyOf(msg("x", "2026-10-19T18:00", { direction: "inbound" })) &&
-        !Mesh.replyOf(msg("x", "2026-10-19T18:00", { sender: { type: "workflow" } })) && !Mesh.replyOf(msg("x", "2026-10-19T18:00", { kind: "activity" })) &&
-        Mesh.replyOf(msg("x", "2026-10-19T18:00", { text: "", parts: [{ type: "image" }], attachments: [{ kind: "image" }] })).kind === "image");
+      check("Mesh: every HOF message is kept, across all the pages", imran.replies.length === 22, `${imran.replies.length}`);
+      const narrow = await Mesh.repliesTo({ numbers: Mesh.numbersOf({ phone: "+971557777777" }), name: "" }, PKT("2026-10-20T08:00"), PKT("2026-10-20T10:00"));
+      check("Mesh: only messages inside the client's own window are returned", narrow.replies.length === 3, `${narrow.replies.length}`);
+      const old = await Mesh.repliesTo({ numbers: Mesh.numbersOf({ phone: "+971556666666" }), name: "" }, from, to);
+      check("Mesh: a HOF message in a chat not listed as changed is still matched to its client", old.found && old.replies.length === 1 && old.replies[0].by === "Maryam Chand");
+      const n0 = world.requests.length;
+      await Mesh.repliesTo({ numbers: Mesh.numbersOf({ phone: "0501234567" }), name: "" }, from, to);
+      check("Mesh: looking up a client asks Mesh nothing more", world.requests.length === n0);
+
+      process.env.MESH_API_KEY = "KEY\nKEY2"; await Mesh.start(); await Mesh.load(from);
+      const bilal = await Mesh.repliesTo({ numbers: Mesh.numbersOf({ phone: "+92 300 1234567" }), name: "Bilal Ahmed" }, from, to);
+      check("Mesh: with a key for each number, every number is read", Mesh.state.lines.length === 2 && bilal.found && bilal.replies[0].line === "Warda");
+      process.env.MESH_API_KEY = "KEY\nWRONG";
+      check("Mesh: a key refused while another works is reported, and the other number is still read",
+        (await Mesh.start()) && Mesh.state.problems.length === 1 && /^Key 2 of 2: Mesh refused/.test(Mesh.state.problems[0]), Mesh.state.problems.join(" | "));
+
+      process.env.MESH_API_KEY = "KEY"; await Mesh.start();
+      world.dropAfter = world.requests.length + 2;
+      check("Mesh: a key that stops working part-way turns WhatsApp off, never the report",
+        !(await Mesh.load(from)) && !Mesh.state.on && /stopped accepting/.test(Mesh.state.why) && (await Mesh.repliesTo({ numbers: Mesh.numbersOf({ phone: "0501234567" }), name: "" }, from, to)) === null, Mesh.state.why);
+      world.dropAfter = undefined;
+
+      const R = (extra) => Mesh.replyOf(msg("x", "c", "2026-10-19T18:00", extra));
+      check("Mesh: a reply is a real WhatsApp message from a person", R({}) && !R({ direction: "inbound" }) && !R({ kind: "note" }) && !R({ kind: "activity" }) &&
+        !R({ sender: { type: "system", name: "Campaign" } }) && !R({ sender: { type: "system", name: "Mesh" } }) && !R({ campaign: "x" }) && !R({ status: "failed" }) && !R({ status: "pending" }));
+      check("Mesh: images, videos and files are told apart", R({ text: "", parts: [{ type: "image" }], attachments: [{ mimeType: "image/jpeg" }] }).kind === "image" &&
+        R({ text: null, parts: [], attachments: [{ mimeType: "video/mp4" }] }).kind === "video" && R({ text: null, parts: [{ type: "document" }], attachments: [{ mimeType: "application/pdf" }] }).kind === "file");
+      check("Mesh: a template's words are shown", R({ text: null, parts: [{ type: "template", text: "Your appointment is confirmed." }] }).preview === "Your appointment is confirmed.");
+      const keep = SETTINGS.MESH_PEOPLE_SENDERS;
+      const counted = !!R({ sender: { type: "system", name: "Team (outside Mesh)" } });
+      SETTINGS.MESH_PEOPLE_SENDERS = ["WhatsApp Business app (phone)"];
+      const dropped = R({ sender: { type: "system", name: "Team (outside Mesh)" } }) === null;
+      SETTINGS.MESH_PEOPLE_SENDERS = keep;
+      check("Mesh: 'Team (outside Mesh)' counts, and can be taken out in config.js", counted && dropped);
     } catch (e) { check("Mesh checks ran", false, e.stack); }
-    finally { global.fetch = realFetch; if (realKey === undefined) delete process.env.MESH_API_KEY; else process.env.MESH_API_KEY = realKey; }
+    finally {
+      global.fetch = realFetch; SETTINGS.MESH_RPS = realRps;
+      if (realKey === undefined) delete process.env.MESH_API_KEY; else process.env.MESH_API_KEY = realKey;
+    }
   }
 
   // ---------------------------------------------------------------- settings
