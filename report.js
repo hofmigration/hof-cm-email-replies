@@ -6,7 +6,7 @@
 //  3. Group each client's emails into waits, and find the first email HOF sent back.
 //  4. Anything not answered by email within 24 working hours is checked again: a reply from
 //     anyone else at HOF, a connected call on the client's contact or deal, and a WhatsApp
-//     from HOF to the client in Mesh (6-mesh.js).
+//     from HOF to the client, read through Mesh's Compliance Read API (6-mesh.js).
 //  5. Email the report, with every row in an attached sheet.
 //
 // Read-only. Nothing in HubSpot or Mesh is changed.
@@ -121,10 +121,18 @@ async function main() {
       .filter((x) => x.j.verdict !== "on-time" && (x.j.due > window.start || x.j.replyAt === null));
     if (open.length && (c.contactId || c.dealIds.length)) deep.push({ c, since: Math.min(...open.map((x) => x.j.start)) });
   }
-  const meshOn = deep.length ? await Mesh.start() : false;
-  console.log(`Second look (other senders, connected calls${meshOn ? ", WhatsApp in Mesh" : ""}) for ${deep.length} client(s)…`);
+  // WhatsApp: every chat and every HOF message on the Mesh number(s), read once, from the
+  // oldest email being checked
+  let meshOn = deep.length ? await Mesh.start() : false;
+  if (meshOn) {
+    const from = Math.min(...deep.map((d) => d.since));
+    console.log(`Mesh key accepted (${Mesh.state.header}). Reading WhatsApp on ${Mesh.state.lines.map((l) => l.name).join(", ")} since ${T.fmtWhen(from)}…`);
+    meshOn = await Mesh.load(from);
+    if (meshOn) console.log(`   ${Mesh.state.chats} chats and ${Mesh.state.messages} messages read, ${Mesh.state.hofMessages} of them sent by HOF.`);
+    if (meshOn) for (const p of Mesh.state.problems) console.log(`!! ${p}.`);
+  }
+  console.log(`Second look (other senders, connected calls${meshOn ? ", WhatsApp" : ""}) for ${deep.length} client(s)…`);
   if (deep.length && !meshOn) console.log(`!! WhatsApp not checked: ${Mesh.state.why}.`);
-  else if (meshOn) console.log(`   Mesh key accepted as ${Mesh.state.header}.`);
   let done = 0;
   for (const { c, since } of deep) {
     try {
@@ -165,8 +173,8 @@ async function main() {
         dealName: c.deal ? String(c.deal.dealname || "").trim() : "",
         dealLink: c.deal ? H.dealLink(c.deal.id) : "",
         contactLink: c.contactId ? H.contactLink(c.contactId) : "",
-        // what the WhatsApp check found: "number" / "name" (found that way), "none" (not in
-        // Mesh), "clash" (two Mesh contacts with that name), "" (not checked)
+        // what the WhatsApp check found: "number" / "name" (found that way), "none" (no chat
+        // with them on the number), "clash" (two WhatsApp contacts with that name), "" (not checked)
         waFound: c.wa ? (c.wa.found ? c.wa.how : c.wa.clash ? "clash" : "none") : "",
       };
       if (row.callIn) row.callIn.by = nameOf(row.callIn.ownerId);
@@ -188,15 +196,16 @@ async function main() {
   if (missingYears.length) console.log(`!! No UAE holidays are listed for ${missingYears.join(", ")} — add them to config.js.`);
 
   const mst = Mesh.state;
-  const mesh = { used: deep.length > 0, on: meshOn, why: mst.why, header: mst.header, clients: mst.clients, byNumber: mst.byNumber, byName: mst.byName,
-    notFound: mst.notFound, nameClash: mst.nameClash, errors: mst.errors, replies: mst.replies, requests: mst.requests };
+  const mesh = { used: deep.length > 0, on: meshOn && mst.on, why: mst.why, header: mst.header, lines: mst.lines, since: mst.since,
+    chats: mst.chats, messages: mst.messages, hofMessages: mst.hofMessages, clients: mst.clients, byNumber: mst.byNumber, byName: mst.byName,
+    notFound: mst.notFound, nameClash: mst.nameClash, errors: mst.errors, replies: mst.replies, requests: mst.requests, problems: mst.problems };
   const r = { now, window, sections: s, byCm, intake, missingYears, notCountedToday: intake.filter((x) => !x.counted).length, unreadPct,
     readFrom, hubspotCalls: H.stats.calls, mesh };
 
   // ---- the log ----
   console.log(`\nFell due: ${s.due.length} — on time ${s.onTime.length}, by call ${s.call.length}, by WhatsApp ${s.whatsapp.length}, late ${s.late.length}, no reply ${s.none.length}`);
-  if (mesh.on) console.log(`WhatsApp (Mesh): ${mesh.clients} clients looked up — ${mesh.byNumber} found by number, ${mesh.byName} by name, ${mesh.notFound} not in Mesh` +
-    `${mesh.nameClash ? ` (${mesh.nameClash} names shared by several Mesh contacts)` : ""}; ${mesh.replies} HOF messages in the windows; ${mesh.errors} could not be checked; ${mesh.requests} requests.`);
+  if (mesh.on) console.log(`WhatsApp (Mesh, ${mesh.lines.map((l) => l.name).join(", ")}): ${mesh.clients} clients looked up — ${mesh.byNumber} found by number, ${mesh.byName} by name, ${mesh.notFound} with no chat there` +
+    `${mesh.nameClash ? ` (${mesh.nameClash} names shared by several WhatsApp contacts)` : ""}; ${mesh.replies} HOF messages after their emails; ${mesh.requests} requests to Mesh.`);
   console.log(`Still unanswered from earlier: ${s.still.length}. Due before the next report: ${s.next.length}.`);
   console.log(`Asked for something to be done, and no reply or connected call: ${s.none.filter((x) => x.ask).length} today, ${s.still.filter((x) => x.ask).length} from earlier days.`);
   for (const l of byCm.lines) console.log(`  ${l.cm.padEnd(22)} due ${String(l.due).padStart(3)}  on time ${String(l.onTime).padStart(3)}  call ${String(l.call).padStart(2)}  WhatsApp ${String(l.whatsapp).padStart(2)}  late ${String(l.late).padStart(2)}  none ${String(l.none).padStart(2)}  still ${String(l.still).padStart(2)}`);
