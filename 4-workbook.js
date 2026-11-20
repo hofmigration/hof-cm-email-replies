@@ -9,8 +9,8 @@ const NAVY = "FF16205E", ROYAL = "FF1F2F8F", LINE = "FFE6E9F1", PANEL = "FFF7F9F
 const RED = "FFFDECEA", REDTX = "FFB42318", AMBER = "FFFFF5E8", AMBERTX = "FF9A5B0C", GREEN = "FFE9F6EE", GREENTX = "FF1E7A4D", BLUE = "FFEAF1FB", BLUETX = "FF1D4F91";
 const thin = { style: "thin", color: { argb: LINE } };
 const BOX = { top: thin, left: thin, bottom: thin, right: thin };
-const TONE = { none: [RED, REDTX], late: [AMBER, AMBERTX], call: [BLUE, BLUETX], "on-time": [GREEN, GREENTX], waiting: [PANEL, "FF3F4A5A"] };
-const VERDICT = { none: "No reply", late: "Replied late", call: "Call, no email in 24h", "on-time": "On time", waiting: "Not due yet" };
+const TONE = { none: [RED, REDTX], late: [AMBER, AMBERTX], call: [BLUE, BLUETX], whatsapp: [BLUE, BLUETX], "on-time": [GREEN, GREENTX], waiting: [PANEL, "FF3F4A5A"] };
+const VERDICT = { none: "No reply", late: "Replied late", call: "Call, no email in 24h", whatsapp: "WhatsApp, no email in 24h", "on-time": "On time", waiting: "Not due yet" };
 const FLAG = { complaint: "Complaint", chaser: "Chasing", problem: "Problem raised", call: "Asked for a call" };
 
 function title(ws, text, sub, width = 10) {
@@ -48,9 +48,14 @@ const link = (url, text) => (url ? { text, hyperlink: url } : "");
 const COLS = [
   ["Case manager", 20], ["Client", 24], ["Client email", 28], ["Subject", 34], ["Client wrote", 17], ["Due by", 17],
   ["Status", 20], ["Reply sent", 17], ["Replied by", 18], ["Working hrs to reply", 11], ["Over by (working hrs)", 11],
-  ["Connected call", 17], ["Called by", 18], ["Why it needs a reply", 30], ["Flags", 20], ["What the client wrote", 70],
-  ["Emails in this wait", 10], ["Notes", 30], ["Deal", 12], ["Contact", 12],
+  ["Connected call", 17], ["Called by", 18], ["WhatsApp from HOF", 17], ["WhatsApp sent by", 18], ["WhatsApp message", 40],
+  ["Why it needs a reply", 30], ["Flags", 20], ["What the client wrote", 70],
+  ["Action the client asked for", 40], ["Emails in this wait", 10], ["Notes", 30], ["Deal", 12], ["Contact", 12],
 ];
+const COL = (name) => COLS.findIndex(([h]) => h === name) + 1;
+const LAST_COL = String.fromCharCode(64 + COLS.length);
+// the HOF WhatsApp line, when it is not simply the sender's own number ("Migration Team")
+const otherLine = (wa) => { const a = String(wa.line || "").toLowerCase().trim(), b = String(wa.by || "").toLowerCase().trim(); return a && !b.includes(a) && !a.includes(b); };
 
 function notes(r) {
   const n = [];
@@ -59,8 +64,16 @@ function notes(r) {
   if (r.otherCms && r.otherCms.length) n.push(`Also emailed: ${r.otherCms.join(", ")}`);
   if (r.chased) n.push(`Client wrote again ${r.chased} time${r.chased > 1 ? "s" : ""} before an answer`);
   if (r.dayOff && !SETTINGS.FLAT_24_HOURS) n.push("A weekend or holiday fell in between and was not counted");
-  if (r.verdict === "call" && r.replyAt) n.push(`Email reply came later: ${fmtWhen(r.replyAt)}`);
+  if ((r.verdict === "call" || r.verdict === "whatsapp") && r.replyAt) n.push(`Email reply came later: ${fmtWhen(r.replyAt)}`);
   if (r.verdict === "none" && r.callAfter) n.push(`Connected call after the 24 hours: ${fmtWhen(r.callAfter.at)}`);
+  if (r.verdict === "none" && r.waAfter) n.push(`WhatsApp from HOF after the 24 hours: ${fmtWhen(r.waAfter.at)}`);
+  if ((r.waIn || r.waAfter) && r.waFound === "name") n.push("Found in Mesh by name, not by phone number: check it is the same person");
+  if (r.verdict === "none" && r.ask) n.push("Action needed, no reply or connected call: even if it has been done, confirm it to the client");
+  if (r.verdict === "none" || r.verdict === "late") {
+    if (r.waFound === "none") n.push("Client not found on WhatsApp in Mesh (by number or name)");
+    else if (r.waFound === "clash") n.push("WhatsApp not checked: more than one Mesh contact has this client's name and no number matched");
+    else if (r.waFound === "" ) n.push("WhatsApp not checked");
+  }
   return n.join(". ");
 }
 
@@ -71,28 +84,40 @@ function waitSheet(wb, name, heading, sub, rows) {
   header(ws, 3, COLS.map(([h]) => h));
   rows.forEach((r, i) => {
     const call = r.callIn || (r.verdict === "none" ? r.callAfter : null);
+    const wa = r.waIn || (r.verdict === "none" ? r.waAfter : null);
     const x = ws.getRow(4 + i);
     x.values = [
       r.cm, r.client, r.clientEmail, r.subject, fmtWhen(r.start), fmtWhen(r.due), VERDICT[r.verdict] || r.verdict,
       r.replyAt ? fmtWhen(r.replyAt) : "", r.replyBy || "",
       r.replyAt ? hrs(r.workMs) : "", r.overMs ? hrs(r.overMs) : "",
       call ? fmtWhen(call.at) : "", call ? call.by || "" : "",
-      r.reason || "", (r.flags || []).map((f) => FLAG[f]).filter(Boolean).join(", "), r.words || "",
+      wa ? fmtWhen(wa.at) : "", wa ? [wa.by, otherLine(wa) ? `(on ${wa.line})` : ""].filter(Boolean).join(" ") : "",
+      wa ? (wa.kind === "message" ? wa.preview : `A ${wa.kind}`) : "",
+      r.reason || "", (r.flags || []).map((f) => FLAG[f]).filter(Boolean).join(", "), r.words || "", r.ask || "",
       r.count, notes(r), link(r.dealLink, "Deal"), link(r.contactLink, "Contact"),
     ];
     x.eachCell({ includeEmpty: true }, (cell, col) => {
       cell.border = BOX;
       cell.alignment = { vertical: "top", wrapText: true };
-      cell.font = col >= 19 ? { name: "Arial", size: 10, color: { argb: ROYAL }, underline: true } : { name: "Arial", size: 10 };
+      cell.font = col >= COL("Deal") ? { name: "Arial", size: 10, color: { argb: ROYAL }, underline: true } : { name: "Arial", size: 10 };
     });
     const [bg, tx] = TONE[r.verdict] || [PANEL, "FF1F2937"];
     x.getCell(7).fill = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
     x.getCell(7).font = { name: "Arial", size: 10, bold: true, color: { argb: tx } };
-    if ((r.flags || []).includes("complaint")) x.getCell(15).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } };
+    if ((r.flags || []).includes("complaint")) x.getCell(COL("Flags")).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } };
+    const ask = COL("Action the client asked for");
+    if (r.verdict === "none" && r.ask) { x.getCell(ask).fill = { type: "pattern", pattern: "solid", fgColor: { argb: RED } }; x.getCell(ask).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } }; }
   });
-  if (rows.length) ws.autoFilter = { from: "A3", to: `T${3 + rows.length}` };
+  if (rows.length) ws.autoFilter = { from: "A3", to: `${LAST_COL}${3 + rows.length}` };
   else ws.getCell("A4").value = "None.";
   return ws;
+}
+
+// what happened with the WhatsApp check on this run
+function meshLines(m) {
+  if (!m || !m.used) return [];
+  if (!m.on) return [`WARNING: WhatsApp was NOT checked on this run: ${m.why}. Emails answered only on WhatsApp may be flagged.`];
+  return [`This run: ${m.clients} clients looked up in Mesh — ${m.byNumber} found by phone number, ${m.byName} by name, ${m.notFound} not found${m.nameClash ? ` (${m.nameClash} of them because several Mesh contacts share the name)` : ""}. ${m.replies} WhatsApp messages from HOF were found in the 24-hour windows.${m.errors ? ` WARNING: ${m.errors} clients could not be checked.` : ""}`];
 }
 
 async function buildWorkbook(r) {
@@ -103,14 +128,15 @@ async function buildWorkbook(r) {
 
   // ---------- Summary ----------
   const sm = wb.addWorksheet("Summary", { views: [{ showGridLines: false }] });
-  sm.columns = [{ width: 26 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 12 }, { width: 10 }, { width: 11 }];
-  title(sm, `Case manager email replies — ${fmtDay(r.window.end)}`, windowText, 9);
+  sm.columns = [{ width: 26 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 11 }, { width: 10 }, { width: 10 }, { width: 12 }, { width: 10 }, { width: 11 }];
+  title(sm, `Case manager email replies — ${fmtDay(r.window.end)}`, windowText, 10);
   const kpi = [
     ["Fell due in this report", s.due.length, null],
     ["Answered by email within 24 hours", s.onTime.length, GREEN],
     ["Flagged — no reply", s.none.length, s.none.length ? RED : null],
     ["Flagged — replied late", s.late.length, s.late.length ? AMBER : null],
     ["No email in 24 hours, but a connected call", s.call.length, s.call.length ? BLUE : null],
+    ["No email in 24 hours, but answered on WhatsApp", (s.whatsapp || []).length, (s.whatsapp || []).length ? BLUE : null],
     ["Still unanswered from earlier days", s.still.length, s.still.length ? RED : null],
     ["Due before the next report", s.next.length, null],
     ["Emails received in the last 24 hours that needed no reply", r.notCountedToday, null],
@@ -127,27 +153,28 @@ async function buildWorkbook(r) {
     row++;
   }
   row += 1;
-  header(sm, row, ["Case manager", "Due", "On time", "By call", "Late", "No reply", "Older, open", "Due next", "On time %"]);
+  header(sm, row, ["Case manager", "Due", "On time", "By call", "By WhatsApp", "Late", "No reply", "Older, open", "Due next", "On time %"]);
   row++;
   for (const l of [...r.byCm.lines, r.byCm.total]) {
     const x = sm.getRow(row);
-    x.values = [l.cm, l.due, l.onTime, l.call, l.late, l.none, l.still, l.next, l.pct == null ? "—" : l.pct / 100];
+    x.values = [l.cm, l.due, l.onTime, l.call, l.whatsapp || 0, l.late, l.none, l.still, l.next, l.pct == null ? "—" : l.pct / 100];
     x.eachCell({ includeEmpty: true }, (cell) => { cell.border = BOX; cell.font = { name: "Arial", size: 10, bold: l === r.byCm.total }; });
     if (l.pct != null) {
-      x.getCell(9).numFmt = "0%";
-      x.getCell(9).fill = { type: "pattern", pattern: "solid", fgColor: { argb: l.pct >= 90 ? GREEN : l.pct >= 70 ? AMBER : RED } };
+      x.getCell(10).numFmt = "0%";
+      x.getCell(10).fill = { type: "pattern", pattern: "solid", fgColor: { argb: l.pct >= 90 ? GREEN : l.pct >= 70 ? AMBER : RED } };
     }
-    if (l.none) x.getCell(6).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } };
-    if (l.still) x.getCell(7).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } };
+    if (l.none) x.getCell(7).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } };
+    if (l.still) x.getCell(8).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } };
     row++;
   }
-  sm.getCell(`A${row + 1}`).value = "On time % is of the emails that were not handled by phone: on time ÷ (on time + late + no reply).";
+  sm.getCell(`A${row + 1}`).value = "On time % is of the emails that were not handled by phone or WhatsApp: on time ÷ (on time + late + no reply).";
   sm.getCell(`A${row + 1}`).font = { name: "Arial", size: 9.5, italic: true, color: { argb: "FF868E9B" } };
 
   // ---------- the rows ----------
   waitSheet(wb, "Flagged", "Flagged — not answered within 24 hours", `${windowText} No reply at all first, then late replies; the longest waits at the top.`, [...s.none, ...s.late]);
   waitSheet(wb, "Call, no email", "No email reply in 24 hours, but a connected call", "The client was reached by phone within the 24 hours — a connected call on their contact or deal.", s.call);
-  waitSheet(wb, "Still unanswered", "Still unanswered from earlier days", `Due before this report, and still without any email reply or connected call. Kept for ${SETTINGS.STILL_OPEN_DAYS} days.`, s.still);
+  waitSheet(wb, "WhatsApp, no email", "No email reply in 24 hours, but answered on WhatsApp", "HOF sent the client a WhatsApp within the 24 hours (a text, a voice note or a file), seen in Mesh. The message is shown so you can see whether it was about the email.", s.whatsapp || []);
+  waitSheet(wb, "Still unanswered", "Still unanswered from earlier days", `Due before this report, and still without any email reply, connected call or WhatsApp. Kept for ${SETTINGS.STILL_OPEN_DAYS} days.`, s.still);
   waitSheet(wb, "Due next", "Due before the next report", "Not late yet, and nobody has replied.", s.next);
   waitSheet(wb, "On time", "Answered by email within 24 hours", windowText, s.onTime);
 
@@ -183,6 +210,10 @@ async function buildWorkbook(r) {
     "Only the client's new words are read — the quoted thread underneath, signatures and phone footers are removed first.",
     "Counted: complaints, chasers (\"any update?\", \"it's been 9 days\"), a problem or mistake pointed out, a request for a call or meeting, a question, a request (please advise / confirm / send / check), and long messages with no clear question (counted to be safe).",
     `Not counted: emails from HOF staff, automatic messages (auto-replies, reactions, delivery notices, no-reply senders), thank-yous and acknowledgements, and emails that only send documents or news with nothing asked — those need an acknowledgement, not a reply${SETTINGS.COUNT_DOCUMENTS_ONLY ? " (documents are currently COUNTED because COUNT_DOCUMENTS_ONLY is on)" : ""}.`,
+    "A thank-you is read without what it thanks for: \"Thank you for the clarification\", \"Kindly noted\" and \"Thanks, keep me posted\" are acknowledgements. \"Thanks for the update, please send the draft\" still asks for the draft.",
+    "",
+    "ACTIONS ASKED FOR",
+    "When the client asked for something to be done (send, share, check, correct, book a call, process a refund…), that sentence is shown in the \"Action the client asked for\" column. If there was no reply and no connected call, the row is marked: the action was needed, and even if it has been done, the client must be told.",
     "Every email received in the last 24 hours is in the \"All emails received\" tab with the decision and the reason.",
     "",
     "WHAT COUNTS AS AN ANSWER",
@@ -191,8 +222,15 @@ async function buildWorkbook(r) {
     `Connected means the "Connected" call outcome, or a call of ${SETTINGS.CONNECTED_MIN_SECONDS} seconds or more whose outcome is not no-answer, busy, wrong number or voicemail.`,
     "Those emails are listed in their own section instead of being flagged.",
     "",
+    "WHATSAPP, FROM MESH",
+    "If no email went back within 24 hours and there was no connected call, Mesh is checked too: a WhatsApp from anyone at HOF to the client in those 24 hours puts the email in its own section, \"answered on WhatsApp\", instead of flagging it.",
+    "A text, a voice note or a file all count. Voice notes are not listened to: one sent in that time means the conversation happened. Messages sent by bots or workflows, and private notes, do not count.",
+    "The client is found in Mesh by every phone number on their HubSpot contact (phone, mobile, mobile number and WhatsApp number). Only if no number finds them is their name tried, exactly as in HubSpot, and only when exactly one Mesh contact has that name.",
+    "The WhatsApp message is shown next to the email, so you can see whether it was about what the client asked.",
+    ...meshLines(r.mesh),
+    "",
     "LIMITS WORTH KNOWING",
-    "A reply sent from outside HubSpot (personal email, WhatsApp) is not seen, and a call not logged in HubSpot is not seen.",
+    "A reply from a personal email is not seen, a call not logged in HubSpot is not seen, and a WhatsApp from a number that is not connected to Mesh is not seen.",
     "A reply to the client on any thread counts, even if it does not answer the particular question.",
     "The rules read words, not meaning. Check the client's email in HubSpot before acting on any single row.",
     "Approved leave does not pause the clock — the client is still waiting — but rows are marked so cover can be arranged.",
