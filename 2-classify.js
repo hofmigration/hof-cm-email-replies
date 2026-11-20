@@ -10,7 +10,15 @@
 //   not counted — documents or news sent with nothing asked (an acknowledgement is enough)
 // Every decision carries a plain reason, which the sheet shows next to the email.
 //
-// These rules were tuned on 348 real client emails to the case managers (14–20 Oct 2026).
+// Before anything is read, a thank-you and what it thanks for are taken out ("Thank you for
+// the clarification" asks for nothing), as are polite offers, "keep me posted" in an email
+// that is otherwise a thank-you, the client's own plans ("I will have a call with my
+// referee") and question marks that are really a lost emoji ("Thank you Yamina ??").
+// When the client asks for something to be DONE, that sentence is kept as the "ask", so the
+// report can say the action was needed when nobody replied.
+//
+// These rules were tuned on 348 real client emails to the case managers (14–20 Oct 2026),
+// and re-checked on 1,043 (4–18 Nov 2026), where 16 thank-yous stopped being counted.
 const { SETTINGS } = require("./config");
 
 // ---------------------------------------------------------------- the client's new words
@@ -30,6 +38,19 @@ const LINE_CUTS = [
   /^\s*get outlook for\b/i,
   /^\s*(this (e-?mail|message)\b.{0,60}\b(confidential|intended (only|solely)|privileged))/i,
   /^\s*(disclaimer|confidentiality notice)\s*:?/i,
+];
+// The same endings in the middle of a line: some phones send the whole email as one line,
+// so "…Kindly noted. Regards, Sent from Outlook for iOS ______ From: Rahima…" still has to
+// stop at the phone footer or the separator.
+// Capital letters on purpose: the footer says "Sent from my iPhone"; a client writing "I sent
+// from my phone yesterday" must not lose the rest of the email.
+const INLINE_CUTS = [
+  /\bSent from (my )?(iPhone|iPad|Samsung|Galaxy|Huawei|Android|[Mm]obile|[Ss]martphone|[Pp]hone|BlackBerry)\b/,
+  /\bSent from (Outlook|Yahoo Mail|Mail for Windows|the Outlook app)\b/,
+  /\bGet Outlook for (iOS|Android)\b/,
+  /_{20,}/,
+  /-{3,}\s*(original message|forwarded message|reply message)\s*-{3,}/i,
+  /\bbegin forwarded message\s*:/i,
 ];
 const HEADER_FIELD = /^\s*(from|de|von|من)\s*:\s*\S/i;
 const HEADER_NEXT = /^\s*(sent|date|to|subject|cc|envoyé|gesendet|التاريخ|إلى)\s*:/i;
@@ -53,7 +74,7 @@ function newWords(text) {
     if (ln.trim() && !/^\s*(dear|hi|hello|hey|good (morning|afternoon|evening))\b/i.test(ln)) seenContent = true;
   }
   let out = lines.slice(0, cut).join("\n");
-  for (const re of [QUOTE_INLINE, OUTLOOK_INLINE]) {
+  for (const re of [QUOTE_INLINE, OUTLOOK_INLINE, ...INLINE_CUTS]) {
     const m = re.exec(out);
     if (m && m.index > 0) out = out.slice(0, m.index);
   }
@@ -100,6 +121,8 @@ const OFFERS = [
   /\b(in case|should you|whenever you)\b[^.?!\n]{0,120}\b(need|require|let (me|us) know|contact|reach)\b[^.?!\n]*/gi,
   /\b(hope|hoping) (you|this|that|all|everything)\b[^.?!\n]*\?/gi,   // "hope you are well?" is not a question
   /\b(talk|speak) (to|with) you (then|soon|later|tomorrow|on \w+)\b/gi,
+  // the client's own plans: "I will have a call with my referee this week" asks nothing of HOF
+  /(?<!\b(can|could|shall|may|should|would|will|do|let)\s+)\b(i|we|he|she|they)\s+((will|'ll|shall|am going to|are going to|plan to|am planning to|already|also|have to)\s+)?(have|had|arrange|schedule|book|set up|setup|fix|attend|join)\s+(a |an |one |the )?(quick |short |joint |zoom |teams |google meet |video |phone )?(call|meeting|session|zoom|appointment|slot)\b(?![^.?!\n]{0,60}\bwith (you|u|hof|your team)\b)[^.?!\n]*/gi,
 ];
 
 const SIGNALS = {
@@ -110,13 +133,35 @@ const SIGNALS = {
 };
 const QUESTION = /[?؟]/;
 const AUX_QUESTION = /(^|[.!\n:;]\s*|\b(and|but|also|so|now)\s+)(do|does|did|is|are|was|were|have|has|can|could|will|would|shall|should|may) (you|we|i|it|there|my|the|this|they|these|those|your|he|she)\b/i;
+// "Thank you for the update, please keep me posted" / "Noted, let me know once it is
+// submitted": in an email that is otherwise a thank-you, asking to be told LATER is not
+// something to answer now. Without a thank-you, the same words still count.
+const LATER = [
+  /\b(please\s+)?(do\s+)?(let (me|us) know|update (me|us)|inform (me|us)|notify (me|us)|tell (me|us))\s+(once|as soon as|whenever|after)\b[^.?!\n]*/gi,
+  /\b(please\s+)?(do\s+)?keep (me|us) (updated|posted|informed|in the loop)\b[^.?!\n]*/gi,
+];
+const THANKED = /\b(thanks?|thank you|thankyou|thx|noted|well noted|well received|received|appreciated?|grateful|ok|okay|alright|sure|great)\b/i;
+
+// "Thank you for the clarification" thanks someone for something; it does not ask for it.
+// The thank-you and what it is for are removed before looking for requests, up to the end
+// of that clause, so "Thanks for the update, please send the draft" still asks for the draft.
+const GRATITUDE_STOP = "but|however|although|though|yet|please|pls|plz|kindly|can|could|would|will|shall|may|when|what|how|why|where|which|whether|i|we|also|meanwhile|now|so|is|are|do|does|did";
+const GRATITUDE = new RegExp(
+  "\\b(thanks?|thank you|thankyou|thx|many thanks|much appreciated|appreciated?|grateful)\\b" +
+  "(\\s+(so|very)\\s+much|\\s+a lot|\\s+again|\\s+once again|\\s+as always|\\s+(dear\\s+)?((mr|ms|mrs|miss|dr)\\.?\\s+)?[a-z]+)?" +
+  "\\s*,?\\s*(for|regarding|about)\\b" +
+  `(?:(?!\\b(${GRATITUDE_STOP})\\b)[^.,;:?!؟\\n]){0,90}`, "gi");
+// "Thank you Yamina ??": some phones turn an emoji into question marks. A lone "?" or "??"
+// after a thank-you, with no question word before it, is not a question.
+const QUESTION_WORDS = /\b(what|when|where|why|how|which|who|whom|whose|is|are|was|were|do|does|did|can|could|will|would|shall|should|may|have|has|any)\b/i;
+
 const REQUEST = [
-  /\b(please|pls|plz|pl|kindly)\s+(also\s+)?(?!find\b|fond\b|fine\b|finf\b|see\b|note\b|refer\b|be\b|ignore\b|accept\b|disregard\b|excuse\b|forgive\b|remember\b|go ahea\w*|proceed\b|continue\b|carry on\b|allow (me|us) (some |more |a few |one more )?(time|days?|weeks?|sometime)\b|let me know if\b)[a-z]{2,}/i,
-  /\b(pls|plz)\b/i,
+  /\b(please|pls|plz|pl|kindly)\s+(also\s+)?(?!find\b|fond\b|fine\b|finf\b|see\b|note\b|noted\b|acknowledged\b|received\b|regards\b|thanks?\b|thank\b|expect\b|bear\b|refer\b|be\b|ignore\b|accept\b|disregard\b|excuse\b|forgive\b|remember\b|go ahea\w*|proceed\b|continue\b|carry on\b|allow (me|us) (some |more |a few |one more )?(time|days?|weeks?|sometime)\b|let me know if\b)[a-z]{2,}/i,
+  /\b(pls|plz)\b(?!\s+(find|fond|fine|see|note|noted|refer|ignore|accept|disregard|excuse|forgive|expect|bear)\b)/i,   // "Plz find attached" sends; it does not ask
   /\b(could|can|would|will|may) you\b/i,
   /\b(can|could|may|shall|should) (i|we|myself)\b/i,
   /\b(i|we) (would like|'d like|want|wanted|wish|need|needed|request|am requesting|would request|would appreciate|will appreciate|'d appreciate|require|am looking for|am waiting)\b|\b(i'd|we'd) (like|appreciate)\b/i,
-  /\b(let (me|us) know|update me|keep (me|us) (updated|posted|informed)|inform me|tell me|get back to (me|us)|revert (back )?to (me|us)|(respond|reply) (to me|back to me|to my (email|query|question|request))|advise|guide (me|us)|(help|assist|support) (me|us)|clarif(y|ication)|suggest(ion)?s?)\b/i,
+  /\b(let (me|us) know|update me|keep (me|us) (updated|posted|informed)|inform me|tell me|get back to (me|us)|revert (back )?to (me|us)|(respond|reply) (to me|back to me|to my (email|query|question|request))|advise|guide (me|us)|(help|assist|support) (me|us)|clarify|(need|want|require|request|seek|seeking|some|further|more|any|for|a) clarifications?|clarifications? (is |are )?(on|about|regarding|required|needed)|suggest|(your|any|some) suggestions?)\b/i,
   /\b(awaiting|await|waiting for|need|needs|require|request|seek|seeking|would appreciate|will appreciate|looking for) (your|you)\b/i,
   // "attached for your review" asks; "thank you for your confirmation" does not
   /(?<!\b(thanks?|thank you|appreciated?|appreciate|grateful)\b[^.?!\n]{0,40})\bfor your (kind )?(review|revision|approval|confirmation|feedback|consideration|comments?|input|check|checking|verification|action|necessary action|response|guidance|advice)\b/i,
@@ -133,6 +178,19 @@ const REQUEST = [
 ];
 const ACK = /\b(thanks?|thank you|thankyou|thx|tq|ty|noted|received|well received|ok|okay|okk|alright|all right|great|perfect|sure|will do|done|appreciated?|much appreciated|grateful|jazak ?allah\w*|shukri?y?a|got it|sounds good|fine|wonderful|excellent|awesome|understood|acknowledged|welcome|amazing|lovely|brilliant|confirmed)\b/i;
 const DOCS = /\b(attached|attachment|attaching|enclosed|please find|kindly find|pfa|upload(ed|ing)?|i have (sent|shared|submitted|signed|completed|filled|updated|answered|provided)|i('ve| have) (just )?(sent|shared|submitted|signed|completed|filled|updated|answered|provided)|sharing|here (is|are)|as requested|signed (copy|copies|documents?|letters?|forms?)|scanned|copy of|see below|below (is|are)|my (responses?|answers?) (below|are|is))\b/i;
+// Asking for something to be DONE (send, check, correct, book, call…), as opposed to asking
+// a question. When one of these goes unanswered, the report says the action was needed and
+// that the client must be told, even if it has already been done.
+const ACTION_VERBS = "send|share|forward|provide|resend|re-send|upload|submit|file|prepare|draft|review|check|verify|validate|correct|fix|change|amend|revise|edit|update (the|my|it|this|that|our|these|those|them)|add|remove|delete|include|book|schedule|reschedule|arrange|set up|setup|call|ring|cancel|refund|return|process|activate|reactivate|reset|sign|approve|issue|apply|pay|transfer|initiate|start|proceed with|look into|look at|follow up with|contact|reach out to|email|courier|deliver|confirm (the|my|our|if|whether|receipt|that)|reply to|respond to|expedite|speed up|finali[sz]e|complete|lodge|view|go through|look through|consider|incorporate|reinstate|restore|hold|keep (the|my|it|this|that|these)|ask (the|your)|reach (me|us|out)|use|create|generate|enable|grant|attach|translate|notari[sz]e|print|collect";
+const ACTION = [
+  new RegExp(`\\b(please|pls|plz|pl|kindly|could you|can you|would you|will you|(i|we) (need|want|would like|request) you to|request you to|you (need|have|must|should) to|do)\\s+(also\\s+)?(${ACTION_VERBS})\\b`, "i"),
+  new RegExp(`(^|[.!\\n:;]\\s*)(${ACTION_VERBS}) (me|us|it|the|my|this|that|a|an|all|them|our|these|those)\\b`, "i"),
+  /\b(i|we) (need|want|require|request|would like|'d like) (the|a|an|my|our|your|a copy of|copies of|an update on|to (have|get|receive|see|book|schedule|cancel))\b/i,
+  /(?<!\b(thanks?|thank you|appreciated?|appreciate|grateful)\b[^.?!\n]{0,40})\bfor your (kind )?(review|revision|approval|signature|action|necessary action|verification)\b/i,
+  /\bfor (review|approval|signature)\b/i,
+  /\b(refund|money back|cancel (my|the|this) (case|contract|file|service|agreement|application))\b/i,
+  /\byou (may|can) (now )?(proceed|go ahead|submit|file|book|use|send|share)\b/i,
+];
 const AUTO_BODY = /^\s*\S[^\n]{0,80}\breacted via (gmail|outlook)\b|^\s*(this is an automatic|this is an automated|automatic reply|auto-?reply|i am (currently )?out of (the )?office|i'm (currently )?out of (the )?office)/i;
 const REPLY_SUBJECT = /^\s*((re|fw|fwd|aw|tr|rv|sv|antw)(\[\d+\])?\s*:\s*)+/i;
 
@@ -140,13 +198,38 @@ const domainOf = (addr) => String(addr || "").toLowerCase().split("@")[1] || "";
 const isInternal = (addr) => SETTINGS.INTERNAL_DOMAINS.some((d) => domainOf(addr) === d || domainOf(addr).endsWith("." + d));
 const cleanSubject = (s) => String(s || "").replace(REPLY_SUBJECT, "").trim();
 
-function read(t) {
-  let s = t;
+function dropEmojiMarks(s) {
+  return s.replace(/(^|[.!\n]\s*)([^.!?؟\n]*?)\s\?+(?=\s|$)/g, (m, lead, before) => (ACK.test(before) && !QUESTION_WORDS.test(before) ? `${lead}${before} ` : m));
+}
+
+// the words with polite offers and thank-yous taken out; what is left is what the client asks
+function strip(t) {
+  let s = dropEmojiMarks(t);
   for (const re of OFFERS) s = s.replace(re, " ");
-  const flags = Object.keys(SIGNALS).filter((k) => SIGNALS[k].test(s));
+  if (THANKED.test(s)) for (const re of LATER) s = s.replace(re, " ");
+  const polite = s;                         // complaints are read before thank-yous are removed
+  s = s.replace(GRATITUDE, " ");
+  return { polite, s };
+}
+
+function read(t) {
+  const { polite, s } = strip(t);
+  const flags = Object.keys(SIGNALS).filter((k) => SIGNALS[k].test(k === "complaint" ? polite : s));
   const question = QUESTION.test(s) || AUX_QUESTION.test(s);
   const request = REQUEST.some((re) => re.test(s));
-  return { flags, question, request };
+  const rest = s.replace(/[\s.,;:!?-]+/g, " ").trim();
+  return { flags, question, request, rest };
+}
+
+// The sentence in which the client asks for something to be done — shown in the report when
+// nobody answered. Questions alone are not actions; they need a reply, which the row says.
+function askOf(words) {
+  const sentences = String(words || "").split(/(?<=[.!?؟])\s+|\n+/).map((x) => x.trim()).filter(Boolean);
+  for (const sen of sentences) {
+    const { s } = strip(sen);
+    if (SIGNALS.call.test(s) || ACTION.some((re) => re.test(s))) return sen.length > 220 ? sen.slice(0, 219).trimEnd() + "…" : sen;
+  }
+  return "";
 }
 
 const REASONS = {
@@ -173,7 +256,7 @@ const PRIORITY = ["complaint", "chaser", "problem", "call"];
 function classify(email) {
   const from = String(email.from || "").toLowerCase();
   const subject = String(email.subject || "");
-  const out = (needs, key, flags = [], words = "") => ({ needs, key, reason: REASONS[key], flags, words });
+  const out = (needs, key, flags = [], words = "") => ({ needs, key, reason: REASONS[key], flags, words, ask: needs ? askOf(words) : "" });
 
   if (isInternal(from)) return out(false, "internal");
   if (SETTINGS.AUTOMATED_SENDERS.test(from) || SETTINGS.AUTOMATED_DOMAINS.some((d) => domainOf(from) === d || domainOf(from).endsWith("." + d)))
@@ -200,7 +283,9 @@ function classify(email) {
   if (a.question) return out(true, "question", a.flags, words);
   if (a.request) return out(true, "request", a.flags, words);
 
-  if (words.length <= SETTINGS.ACK_MAX_CHARS && ACK.test(words)) return out(false, "ack", [], words);
+  // a thank-you, even a long one, as long as what is left once the thanks are taken out is short
+  const shortOnceThanked = a.rest.length <= SETTINGS.ACK_MAX_CHARS && words.length < SETTINGS.LONG_MESSAGE_CHARS;
+  if ((words.length <= SETTINGS.ACK_MAX_CHARS || shortOnceThanked) && ACK.test(words)) return out(false, "ack", [], words);
   if (words.length >= SETTINGS.LONG_MESSAGE_CHARS) return out(true, "long", [], words);
   if (DOCS.test(words) || email.attachments)
     return out(SETTINGS.COUNT_DOCUMENTS_ONLY, SETTINGS.COUNT_DOCUMENTS_ONLY ? "documentsCounted" : "documents", [], words);
@@ -212,4 +297,4 @@ const snippet = (s, n = 180) => {
   return t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t;
 };
 
-module.exports = { classify, newWords, core, htmlToText, isInternal, cleanSubject, snippet, REASONS };
+module.exports = { classify, newWords, core, htmlToText, isInternal, cleanSubject, snippet, askOf, REASONS };
