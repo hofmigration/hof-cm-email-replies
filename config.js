@@ -1,131 +1,324 @@
-// config.js — Case manager email replies, every day at 11am. SAFE TO EDIT.
+// 6-mesh.js — WhatsApp, read through Mesh's Compliance Read API. Read-only: the API cannot
+// send, change or delete anything, and nothing here tries to.
 //
-// The rules are written out here in plain words, and repeated at the bottom of every
-// report. If a rule is wrong, change it here — never quietly in the code.
+// Mesh (mesh.hof-global.com) is HOF's own tool with the WhatsApp Business API behind it. Its
+// Compliance Read API gives read-only access to every chat on one WhatsApp number; the key
+// decides which number (today, the HOF Migration team number). Before a client email is
+// called unanswered, those chats are checked for a WhatsApp from HOF to the client after they
+// wrote: a text, a voice note or a file. Voice notes are not listened to; one sent in that
+// time means the conversation happened.
+//
+// Once a run, for each key:
+//   GET /channel                       is the key accepted, and which number is it
+//   GET /conversations?updatedSince=   every chat that changed since the oldest email being
+//                                      checked: who each chat is with
+//   GET /messages?since=               every message on the number since then; only HOF's
+//                                      own messages are kept
+// Each client is then matched here, with no more requests: by every phone number on their
+// HubSpot contact, and only when no number matches, by their HubSpot name — if exactly one
+// WhatsApp contact on that number has exactly that name. A WhatsApp check can only ever clear
+// an email: nothing found (or not found) in Mesh is ever held against anyone.
+const { parsePhoneNumberFromString } = require("libphonenumber-js/max");
+const { SETTINGS } = require("./config");
 
-const SETTINGS = {
-  // ---- who ----
-  // HubSpot owner id -> name. Ids are used, not names, so a renamed user cannot drop out.
-  // "Anwar" is Anwar Saeed, the case manager. HubSpot also has Danish Anwar (98718071) and
-  // Hassan Anwar (99565264) — swap the id below if you meant one of them.
-  CASE_MANAGERS: {
-    "362254136": "Brenda Murowanidzwa",
-    "82943802": "Yamina Sadi",
-    "86814673": "Ali Tariq",
-    "87160491": "Anwar Saeed",
-    "88038567": "Tamjeed Zahid",
-    "475397717": "Thushara M S",
-    "1844235827": "Rahima Nabili",
-    "89930419": "Warda Badar",
-    "93944662": "Umer Masaud",
-    "93819566": "Hashim Tahir",
-    "96187067": "Muhammad Zaryab",
-    "97008108": "Maryam Chand",
-    "100443134": "Muhammad Asad Mir",
-    "100464860": "Fatou Toure",
-  },
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// how long to wait before asking again (the self-test shortens these)
+const timing = { tooMany: 61000, busy: 5000, network: 2000 };
 
-  // ---- THE RULE ----
-  // A client email that needs a reply gets one within 24 hours. The clock does not run on
-  // Saturday, Sunday or UAE public holidays — the same rule as the WhatsApp review:
-  //   Monday 3pm    -> due Tuesday 3pm
-  //   Thursday 3pm  -> due Friday 3pm
-  //   Friday 3pm    -> due Monday 3pm
-  //   Saturday      -> due end of Monday
-  // Set FLAT_24_HOURS to true for a plain 24 hours, weekends and holidays included.
-  REPLY_HOURS: 24,
-  FLAT_24_HOURS: false,
-  TZ_OFFSET_HOURS: 5,          // Pakistan time; no daylight saving
-  WEEKEND_DAYS: [6, 0],        // Saturday and Sunday
+const fresh = () => ({
+  on: false, why: "", header: "", lines: [], problems: [], since: 0,
+  chats: 0, messages: 0, hofMessages: 0, requests: 0, errors: 0,
+  clients: 0, byNumber: 0, byName: 0, notFound: 0, nameClash: 0, replies: 0,
+});
+const state = fresh();
+let keys = [];      // [{ headers, line }] for every key Mesh accepted — never logged or shown
+let idx = null;     // what was read: one entry per WhatsApp number
 
-  // UAE public holidays (the main office is in Dubai, so these are the only ones). These
-  // are the PRIVATE-SECTOR dates as announced for 2026. Islamic holidays follow the moon
-  // and can be moved, so only ever enter an ANNOUNCED date, never a predicted one.
-  // ADD 2027 once announced — the report warns when a year has none listed.
-  HOLIDAYS: [
-    "2026-01-01",                              // New Year's Day
-    "2026-03-19", "2026-03-20", "2026-03-21",  // Eid Al Fitr
-    "2026-05-26",                              // Arafat Day
-    "2026-05-27", "2026-05-28", "2026-05-29",  // Eid Al Adha
-    "2026-06-15",                              // Hijri New Year (moved to the Monday)
-    "2026-08-28",                              // Prophet's Birthday (moved to the Friday)
-    "2026-12-02", "2026-12-03",                // UAE National Day
-  ],
+// ---------------------------------------------------------------- phone numbers
+// "+971 50 123 4567", "00971501234567", "971501234567", "0501234567" -> the same number.
+const EXT = /\s*(?:ext\.?|extension|x)\s*\d+\s*$/i;
+const SPLIT = /\s*(?:\/|,|;|\||\n|\bor\b|\band\b)\s*/i;
+function tryParse(text, country) { try { return parsePhoneNumberFromString(text, country) || null; } catch { return null; } }
+function pack(p, digits, forced) {
+  const cc = p.countryCallingCode, nsn = p.nationalNumber;
+  return { e164: p.number, nsn, local: !(forced || digits === cc + nsn || digits === cc + "0" + nsn) };
+}
+// local = saved with no country code, so the same digits could be any country's number
+function readNumber(raw) {
+  const s = String(raw ?? "").trim().replace(EXT, "");
+  let d = s.replace(/\D/g, "");
+  if (d.length < 6) return null;
+  if (/^\+/.test(s) || d.startsWith("00")) {
+    if (!/^\+/.test(s)) d = d.slice(2);
+    const p = tryParse("+" + d);
+    return p && p.isPossible() ? pack(p, d, true) : null;
+  }
+  const loc = tryParse(d, SETTINGS.DEFAULT_COUNTRY || "AE");
+  const intl = d.length >= 10 ? tryParse("+" + d) : null;
+  const ok = (p) => p && p.isPossible() && p;
+  const pick = (d.startsWith("0") && ok(loc)) || (loc && loc.isValid() && loc) || (intl && intl.isValid() && intl) ||
+    (d.length >= 11 && !d.startsWith("0") ? ok(intl) || ok(loc) : ok(loc) || ok(intl)) || null;
+  return pick ? pack(pick, d, false) : { e164: null, nsn: d.replace(/^0+/, ""), local: true };
+}
+// every number on a HubSpot contact ("+971… / +92…" is two numbers)
+function numbersOf(props = {}) {
+  const out = new Map();
+  for (const f of ["phone", "mobilephone", "mobile_number", "hs_whatsapp_phone_number"]) {
+    for (const part of String(props[f] || "").split(SPLIT)) {
+      const r = readNumber(part);
+      if (r) out.set(r.e164 || `local:${r.nsn}`, r);
+    }
+  }
+  return [...out.values()];
+}
+// is the WhatsApp contact's number (always +international) one of the client's numbers?
+function sameNumber(meshE164, n) {
+  const m = readNumber(meshE164);
+  if (!m || !m.e164) return false;
+  return m.e164 === n.e164 || (n.local && m.nsn === n.nsn);
+}
+const normName = (s) => String(s || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
 
-  // Approved leave. The clock KEEPS running — the client is still waiting — but rows for a
-  // case manager on leave are marked, so you can see where cover was needed.
-  LEAVE: {
-    // "Warda Badar": ["2026-10-21", "2026-10-22"],
-  },
+// ---------------------------------------------------------------- talking to Mesh
+let next = 0;
+async function gate() {
+  const now = Date.now(); const at = Math.max(now, next);
+  next = at + 1000 / (SETTINGS.MESH_RPS || 1.5);
+  if (at > now) await sleep(at - now);
+}
+const base = () => String(SETTINGS.MESH_API || "https://mesh.hof-global.com/api/compliance-feed/v1").replace(/\/+$/, "");
+const problem = (status, why) => { const e = new Error(why); e.status = status; return e; };
 
-  // ---- the report ----
-  // Each morning's report covers the emails whose 24 hours ended between yesterday's cut-off
-  // and today's, so every email is judged exactly once. Anything still unanswered keeps
-  // reappearing under "Still unanswered" for STILL_OPEN_DAYS.
-  REPORT_HOUR: 11,             // the cut-off, Pakistan time
-  STILL_OPEN_DAYS: 14,
-  ROWS_PER_SECTION: 40,        // rows shown per section in the email; every row is in the sheet
-  REPORT_TO: "razaali@hofmigration.com",
-  CC: [],                      // e.g. ["adnan@hofmigration.com"] — only after hofmigration.com is verified in Resend
-  FROM_EMAIL: "onboarding@resend.dev",   // once verified, e.g. "compliance@hofmigration.com"
-  SEND_EMAIL: String(process.env.SEND_EMAIL || "true").toLowerCase() !== "false",
-  EMAIL_ON_QUIET_DAYS: false,  // weekends and holidays with nothing due send no email
+// what each answer means, in words the report can show
+function explain(status, said, path) {
+  const m = said ? ` — Mesh said "${String(said).replace(/\s+/g, " ").slice(0, 120)}"` : "";
+  switch (status) {
+    case 401: return `Mesh refused the MESH_API_KEY (401: the key is missing or wrong${m})`;
+    case 404: return path === "/channel" ? `Mesh's Compliance Read API was not found at ${base()} (404). Check MESH_API in config.js` : `Mesh could not find ${path} (404${m})`;
+    case 422: return `Mesh did not accept a request for ${path} (422${m})`;
+    case 429: return "Mesh kept answering that too many requests were made (429)";
+    case 503: return "Mesh's Compliance Read API is switched off or being set up (503). Contact the Mesh team";
+    default: return `Mesh answered ${status} to ${path}${m}`;
+  }
+}
 
-  // ---- what counts as an answer ----
-  // A reply is any email from anyone at HOF sent TO the client's address after they wrote.
-  // If there was no reply within the 24 hours, a CONNECTED call on the client's contact or
-  // deal inside those 24 hours puts the email in its own section instead of flagging it.
-  // Case managers mostly log calls on the deal, so both are checked. A WhatsApp reply in
-  // those 24 hours does the same (see "WhatsApp, read from Mesh" below).
-  CONNECTED_DISPOSITION: "f240bbac-87c9-4f6e-bf70-924b57d47db7",   // HubSpot's "Connected"
-  CONNECTED_MIN_SECONDS: 60,   // a call this long counts as connected, unless its outcome says otherwise
-  NOT_CONNECTED_DISPOSITIONS: [
-    "73a0d17f-1163-4015-bdd5-ec830791da20",  // No answer
-    "9d9162e7-6cf3-4944-bf63-4dff82258764",  // Busy
-    "17b47fee-58de-441e-a44c-c6300d46f273",  // Wrong number
-    "b2cf5968-551e-4856-9783-52b3da59a7d0",  // Left voicemail
-    "a4c4c377-d246-4b32-a13b-75a56a4cd0ff",  // Left live message
-  ],
+async function get(headers, path, params = {}, attempt = 0) {
+  await gate();
+  const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "")).toString();
+  state.requests++;
+  let res;
+  try {
+    res = await fetch(`${base()}${path}${qs ? `?${qs}` : ""}`, { headers: { Accept: "application/json", ...headers } });
+  } catch (e) {
+    if (attempt < 4) { await sleep(timing.network * (attempt + 1)); return get(headers, path, params, attempt + 1); }
+    throw problem(0, `Mesh could not be reached (${e.message})`);
+  }
+  // more than 120 requests in a minute: wait a minute, then carry on
+  if (res.status === 429 && attempt < 4) { await sleep(timing.tooMany); return get(headers, path, params, attempt + 1); }
+  // a restart or a hiccup: a few more tries before giving up
+  if (res.status >= 500 && attempt < 3) { await sleep(timing.busy * (attempt + 1)); return get(headers, path, params, attempt + 1); }
+  const text = await res.text();
+  if (!res.ok) {
+    let said = "";
+    try { said = String(JSON.parse(text).message || ""); } catch { /* not JSON */ }
+    throw problem(res.status, explain(res.status, said, path));
+  }
+  if (text.trim().startsWith("<")) throw problem(0, "Mesh answered with a web page instead of data. Check MESH_API in config.js");
+  return text ? JSON.parse(text) : {};
+}
 
-  // ---- WhatsApp, read from Mesh ----
-  // Mesh (mesh.hof-global.com) is HOF's own tool with the WhatsApp Business API behind it.
-  // Every case manager's WhatsApp number and the shared HOF lines feed into it.
-  // When no email went back within the 24 hours and there was no connected call, Mesh is
-  // checked too: a WhatsApp message from anyone at HOF to that client inside the same 24
-  // hours - a text, a voice note or a file - puts the email in its own section instead of
-  // flagging it, the same way a connected call does. Voice notes are not listened to: one
-  // sent in that time means the conversation happened. Messages sent by bots or workflows,
-  // and private notes, do not count.
-  // The client is found in Mesh by every phone number on their HubSpot contact. Only if no
-  // number finds them is their name tried - exactly as it is in HubSpot - and only when
-  // exactly one Mesh contact has that name.
-  // Nothing in Mesh is ever sent, marked as read or changed.
-  USE_MESH: true,
-  MESH_URL: "https://mesh.hof-global.com",
-  MESH_BRAND_ID: "e4b7aa9d-f83c-4d8a-809d-ba2425659d6e",   // HOF Migration, in Mesh
-  MESH_RPS: 4,                 // requests a second to Mesh
-  DEFAULT_COUNTRY: "AE",       // a number saved with no country code is read as a UAE number
+// every item of a list, page by page ({ data, nextCursor }). `fn` returning false stops early.
+// A list too long to finish is an error, never quietly cut short.
+async function each(headers, path, params, fn) {
+  const max = SETTINGS.MESH_MAX_PAGES || 1500;
+  let cursor;
+  for (let i = 0; i < max; i++) {
+    const r = await get(headers, path, { ...params, cursor });
+    for (const x of (r && Array.isArray(r.data) ? r.data : [])) if (fn(x) === false) return;
+    cursor = r && r.nextCursor;
+    if (!cursor) return;
+  }
+  throw problem(0, `Mesh had more than ${max} pages of ${path.slice(1)}, too many to read in one run`);
+}
 
-  // ---- which emails need a reply ----
-  // Not counted: anything from HOF staff, automatic messages, thank-yous, and emails that
-  // only send documents or news with nothing asked (those need an acknowledgement, not a
-  // reply). Counted: questions, requests, chasers, complaints, call requests, and long
-  // messages with no clear question (counted to be safe). Every email that was NOT counted
-  // is listed in the sheet with the reason, so the rules can be checked.
-  INTERNAL_DOMAINS: ["hofmigration.com", "hof-global.com"],
-  AUTOMATED_SENDERS: /(^|[._-])(no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|alerts?|newsletters?|calendar-notification|drive-shares|auto-?confirm|system)([._-]|@)/i,
-  AUTOMATED_DOMAINS: ["docusign.net", "docusign.com", "zoom.us", "calendly.com", "hubspot.com", "hs-email.com",
-    "linkedin.com", "facebookmail.com", "carnegieevaluations.com", "uscis.dhs.gov", "fireflies.ai"],
-  AUTOMATED_SUBJECTS: /^\s*(automatic reply|auto-?reply|autoreply|out of (the )?office|ooo\b|undeliverable|undelivered|delivery status notification|mail delivery (failed|subsystem)|returned mail|read:|accepted:|declined:|tentative:|tentatively accepted|invitation:|updated invitation|canceled event|cancelled event|new event:)/i,
-  COUNT_DOCUMENTS_ONLY: false, // true = documents sent with nothing asked also need a reply in 24 hours
-  LONG_MESSAGE_CHARS: 500,     // a message this long with no clear question is counted, to be safe
-  ACK_MAX_CHARS: 200,          // a thank-you longer than this is read as a real message
+// The secret holds one key, or several (one per WhatsApp number), one per line. A "Bearer"
+// or quotes pasted along with a key are ignored.
+function readKeys(raw) {
+  return [...new Set(String(raw || "").split(/[\s,;]+/)
+    .map((k) => k.trim().replace(/^["'`]+|["'`]+$/g, ""))
+    .filter((k) => k && !/^(bearer|authorization:?|x-api-key:?)$/i.test(k)))];
+}
 
-  // ---- HubSpot ----
-  PORTAL_ID: "23735726",
-  SEARCH_RPS: 4,               // HubSpot allows 5 searches a second for the whole account
-  API_RPS: 8,
-  OUT_DIR: "out",
-};
+// Is each key accepted, and which number is it for? Asked once per run. The API takes the key
+// as a Bearer token or as X-Api-Key; the Bearer token is tried first.
+const STYLES = [["Bearer token", (k) => ({ Authorization: `Bearer ${k}` })], ["X-Api-Key", (k) => ({ "X-Api-Key": k })]];
+async function start() {
+  Object.assign(state, fresh());
+  keys = []; idx = null;
+  if (!SETTINGS.USE_MESH) { state.why = "switched off in config.js (USE_MESH)"; return false; }
+  const list = readKeys(process.env.MESH_API_KEY);
+  if (!list.length) { state.why = "the MESH_API_KEY secret is not set"; return false; }
+  const refused = [];
+  for (const [i, key] of list.entries()) {
+    let why = "", status = 0;
+    for (const [name, make] of STYLES) {
+      try {
+        const got = (await get(make(key), "/channel")) || {};
+        const ch = got.data && !Array.isArray(got.data) ? got.data : got;   // as documented, or wrapped in { data }
+        const line = { id: String(ch.id || `key${i + 1}`), name: String(ch.name || "").trim() || "WhatsApp", phone: String(ch.phoneNumber || "").trim(), brand: String(ch.brand || "").trim() };
+        if (!keys.some((k) => k.line.id === line.id)) keys.push({ headers: make(key), line });   // the same number twice is read once
+        if (!state.header) state.header = name;
+        why = ""; break;
+      } catch (e) {
+        why = e.message; status = e.status;
+        if (e.status !== 401) break;          // only a refusal is worth the other header
+      }
+    }
+    if (why && status === 401) why = "Mesh refused the MESH_API_KEY (401: the key is missing or wrong; it was sent as a Bearer token and as X-Api-Key). Check the GitHub secret holds the key for the Compliance Read API, with nothing else in it";
+    if (why) refused.push(list.length > 1 ? `Key ${i + 1} of ${list.length}: ${why}` : why);
+  }
+  state.lines = keys.map((k) => k.line);
+  if (!keys.length) { state.why = refused.join(". ") || "no key was accepted"; return false; }
+  state.problems = refused;               // some keys worked and some did not
+  state.on = true;
+  return true;
+}
 
-module.exports = { SETTINGS };
+// ---------------------------------------------------------------- reading the number(s)
+const add = (map, k, v) => { if (!map.has(k)) map.set(k, []); map.get(k).push(v); };
+
+// Read every chat and every HOF message since `since`, on every number. Once a run.
+async function load(since) {
+  if (!state.on) return false;
+  if (idx && state.since <= since) return true;
+  const iso = new Date(since).toISOString();
+  const read = [], failed = [];
+  let chats = 0, messages = 0, hof = 0;
+  for (const k of keys) {
+    const li = { line: k.line, convs: new Map(), byE164: new Map(), byNsn: new Map(), byName: new Map(), ofPerson: new Map(), replies: new Map() };
+    const chat = (c) => {
+      if (!c || !c.id || li.convs.has(String(c.id))) return;
+      const id = String(c.id), contact = c.contact || {};
+      const person = String(contact.id || `chat:${id}`);
+      li.convs.set(id, person);
+      add(li.ofPerson, person, id);
+      const n = readNumber(contact.phone);
+      if (n && n.e164) add(li.byE164, n.e164, id);
+      if (n && n.nsn) add(li.byNsn, n.nsn, id);
+      const nm = normName(contact.name);
+      if (nm) { if (!li.byName.has(nm)) li.byName.set(nm, new Set()); li.byName.get(nm).add(person); }
+    };
+    try {
+      let n2 = 0, n3 = 0;
+      await each(k.headers, "/conversations", { updatedSince: iso, limit: 200 }, chat);
+      const orphans = new Set();
+      await each(k.headers, "/messages", { since: iso, limit: 200 }, (m) => {
+        n2++;
+        const r = replyOf(m);
+        if (!r || !m.conversationId) return;
+        n3++;
+        const id = String(m.conversationId);
+        add(li.replies, id, { ...r, line: k.line.name });
+        if (!li.convs.has(id)) orphans.add(id);
+      });
+      // a HOF message in a chat that was not listed as changed: find that chat in the full list
+      if (orphans.size) await each(k.headers, "/conversations", { limit: 200 }, (c) => { if (c && orphans.delete(String(c.id))) chat(c); return orphans.size > 0; });
+      read.push(li);
+      chats += li.convs.size; messages += n2; hof += n3;
+    } catch (e) {
+      const why = e.status === 401 ? "Mesh stopped accepting the key part-way through the run (401)" : e.message;
+      failed.push(keys.length > 1 ? `${k.line.name}: ${why}` : why);
+    }
+  }
+  state.problems = [...state.problems, ...failed];
+  if (!read.length) {
+    state.on = false; idx = null;
+    state.why = failed.join(". ") || "nothing could be read";
+    return false;
+  }
+  idx = read;
+  state.lines = read.map((li) => li.line);
+  Object.assign(state, { since, chats, messages, hofMessages: hof });
+  return true;
+}
+
+// client: { numbers: [readNumber…], name } -> { hits: [[number, chatId]…], how: "number" | "name" | "", clash }
+function findClient(client) {
+  const hits = [], seen = new Set();
+  const take = (i, ids) => { for (const id of ids || []) { const k = `${i}|${id}`; if (!seen.has(k)) { seen.add(k); hits.push([i, id]); } } };
+  idx.forEach((li, i) => {
+    for (const n of client.numbers || []) {
+      if (n.e164) take(i, li.byE164.get(n.e164));
+      // a number saved with no country code is found under whichever country code the chat has
+      if (n.local && n.nsn) take(i, li.byNsn.get(n.nsn));
+    }
+  });
+  if (hits.length) return { hits, how: "number", clash: false };
+  const name = normName(client.name);
+  let clash = false;
+  if (name.split(" ").length >= 2) {
+    idx.forEach((li, i) => {
+      const people = li.byName.get(name);
+      if (!people) return;
+      if (people.size === 1) take(i, li.ofPerson.get([...people][0]));
+      else clash = true;
+    });
+  }
+  return { hits, how: hits.length ? "name" : "", clash: !hits.length && clash };
+}
+
+// ---------------------------------------------------------------- what HOF sent
+const cut = (s, n) => { const t = String(s || "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t; };
+const people = () => (SETTINGS.MESH_PEOPLE_SENDERS || []).map((s) => String(s).trim().toLowerCase());
+
+// A message from HOF that counts as an answer: a real WhatsApp message to the client, sent by a
+// person, that reached WhatsApp. Not an internal note or an activity line, not a campaign, a
+// bot, an automation or Mesh itself, and not one that failed, never left or was deleted.
+// Typed on the team phone (WhatsApp Business app) counts: Mesh shows those as "system", so
+// the senders that are people are listed in config.js (MESH_PEOPLE_SENDERS).
+function replyOf(m) {
+  if (!m || m.direction !== "outbound") return null;
+  if (String(m.kind || "message") !== "message") return null;
+  if (m.campaign) return null;
+  if (m.deleted || m.error || /^(failed|pending)$/i.test(String(m.status || ""))) return null;
+  const who = m.sender || {};
+  const type = String(who.type || "").toLowerCase();
+  const name = String(who.name || (who.user && who.user.name) || "").trim();
+  let by;
+  if (type === "user") by = name || String(who.email || "").trim() || "A HOF team member";
+  else if (type === "system" && people().includes(name.toLowerCase())) by = name;
+  else return null;
+  const at = Date.parse(m.sentAt || m.createdAt || "");
+  if (!at) return null;
+  const parts = Array.isArray(m.parts) ? m.parts : [], files = Array.isArray(m.attachments) ? m.attachments : [];
+  const ptypes = parts.map((p) => String((p && p.type) || "").toLowerCase());
+  const all = [...ptypes, ...files.map((a) => String((a && (a.mimeType || a.kind)) || "").toLowerCase())];
+  const text = String(m.text || "").trim() || parts.map((p) => (p && typeof p.text === "string" ? p.text : "")).join(" ").trim();
+  const kind = all.some((t) => /audio|voice|ptt/.test(t)) ? "voice note"
+    : text ? "message"
+      : all.some((t) => /image|sticker/.test(t)) ? "image"
+        : all.some((t) => /video/.test(t)) ? "video"
+          : files.length || all.some((t) => /document|file|pdf/.test(t)) ? "file" : "message";
+  const said = text || (ptypes.includes("template") ? "(a WhatsApp template)" : ptypes.includes("location") ? "(a location)" : "");
+  return { at, by, email: String(who.email || (who.user && who.user.email) || "").toLowerCase(), kind, preview: kind === "message" ? cut(said, 200) : "" };
+}
+
+// What HOF sent this client on WhatsApp between `from` and `to`, oldest first.
+// -> { found, how, clash, replies } ; null when WhatsApp could not be checked
+async function repliesTo(client, from, to) {
+  if (!state.on) return null;
+  if ((!idx || from < state.since) && !(await load(from))) return null;
+  state.clients++;
+  const { hits, how, clash } = findClient(client);
+  if (how === "number") state.byNumber++;
+  else if (how === "name") state.byName++;
+  else state.notFound++;
+  if (clash) state.nameClash++;
+  const replies = [];
+  for (const [i, id] of hits) for (const r of idx[i].replies.get(id) || []) if (r.at >= from && r.at <= to) replies.push(r);
+  replies.sort((a, b) => a.at - b.at);
+  state.replies += replies.length;
+  return { found: hits.length > 0, how, clash, replies };
+}
+
+module.exports = { start, load, repliesTo, numbersOf, readNumber, sameNumber, replyOf, readKeys, state, timing };
