@@ -75,7 +75,8 @@ const SETTINGS = {
   // A reply is any email from anyone at HOF sent TO the client's address after they wrote.
   // If there was no reply within the 24 hours, a CONNECTED call on the client's contact or
   // deal inside those 24 hours puts the email in its own section instead of flagging it.
-  // Case managers mostly log calls on the deal, so both are checked.
+  // Case managers mostly log calls on the deal, so both are checked. A WhatsApp reply in
+  // those 24 hours does the same (see "WhatsApp, read from Mesh" below).
   CONNECTED_DISPOSITION: "f240bbac-87c9-4f6e-bf70-924b57d47db7",   // HubSpot's "Connected"
   CONNECTED_MIN_SECONDS: 60,   // a call this long counts as connected, unless its outcome says otherwise
   NOT_CONNECTED_DISPOSITIONS: [
@@ -85,6 +86,25 @@ const SETTINGS = {
     "b2cf5968-551e-4856-9783-52b3da59a7d0",  // Left voicemail
     "a4c4c377-d246-4b32-a13b-75a56a4cd0ff",  // Left live message
   ],
+
+  // ---- WhatsApp, read from Mesh ----
+  // Mesh (mesh.hof-global.com) is HOF's own tool with the WhatsApp Business API behind it.
+  // Every case manager's WhatsApp number and the shared HOF lines feed into it.
+  // When no email went back within the 24 hours and there was no connected call, Mesh is
+  // checked too: a WhatsApp message from anyone at HOF to that client inside the same 24
+  // hours - a text, a voice note or a file - puts the email in its own section instead of
+  // flagging it, the same way a connected call does. Voice notes are not listened to: one
+  // sent in that time means the conversation happened. Messages sent by bots or workflows,
+  // and private notes, do not count.
+  // The client is found in Mesh by every phone number on their HubSpot contact. Only if no
+  // number finds them is their name tried - exactly as it is in HubSpot - and only when
+  // exactly one Mesh contact has that name.
+  // Nothing in Mesh is ever sent, marked as read or changed.
+  USE_MESH: true,
+  MESH_URL: "https://mesh.hof-global.com",
+  MESH_BRAND_ID: "e4b7aa9d-f83c-4d8a-809d-ba2425659d6e",   // HOF Migration, in Mesh
+  MESH_RPS: 4,                 // requests a second to Mesh
+  DEFAULT_COUNTRY: "AE",       // a number saved with no country code is read as a UAE number
 
   // ---- which emails need a reply ----
   // Not counted: anything from HOF staff, automatic messages, thank-yous, and emails that
