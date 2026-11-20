@@ -54,8 +54,11 @@ const COLS = [
 ];
 const COL = (name) => COLS.findIndex(([h]) => h === name) + 1;
 const LAST_COL = String.fromCharCode(64 + COLS.length);
-// the HOF WhatsApp line, when it is not simply the sender's own number ("Migration Team")
+// the HOF WhatsApp number, when it is not simply the sender's own number ("HOF Migration")
 const otherLine = (wa) => { const a = String(wa.line || "").toLowerCase().trim(), b = String(wa.by || "").toLowerCase().trim(); return a && !b.includes(a) && !a.includes(b); };
+const aKind = (k) => `${/^[aeiou]/i.test(k) ? "An" : "A"} ${k}`;       // "A voice note", "An image"
+// the WhatsApp number(s) that were read, e.g. "HOF Migration (+971 4 …)"
+const linesOf = (m) => ((m && m.lines) || []).map((l) => (l.phone ? `${l.name} (${l.phone})` : l.name)).join(", ");
 
 function notes(r) {
   const n = [];
@@ -67,11 +70,11 @@ function notes(r) {
   if ((r.verdict === "call" || r.verdict === "whatsapp") && r.replyAt) n.push(`Email reply came later: ${fmtWhen(r.replyAt)}`);
   if (r.verdict === "none" && r.callAfter) n.push(`Connected call after the 24 hours: ${fmtWhen(r.callAfter.at)}`);
   if (r.verdict === "none" && r.waAfter) n.push(`WhatsApp from HOF after the 24 hours: ${fmtWhen(r.waAfter.at)}`);
-  if ((r.waIn || r.waAfter) && r.waFound === "name") n.push("Found in Mesh by name, not by phone number: check it is the same person");
+  if ((r.waIn || r.waAfter) && r.waFound === "name") n.push("Found on WhatsApp by name, not by phone number: check it is the same person");
   if (r.verdict === "none" && r.ask) n.push("Action needed, no reply or connected call: even if it has been done, confirm it to the client");
   if (r.verdict === "none" || r.verdict === "late") {
-    if (r.waFound === "none") n.push("Client not found on WhatsApp in Mesh (by number or name)");
-    else if (r.waFound === "clash") n.push("WhatsApp not checked: more than one Mesh contact has this client's name and no number matched");
+    if (r.waFound === "none") n.push("No WhatsApp chat with this client on the number Mesh checks (searched by every number and the name)");
+    else if (r.waFound === "clash") n.push("WhatsApp not checked: no number matched, and more than one WhatsApp contact has this client's name");
     else if (r.waFound === "" ) n.push("WhatsApp not checked");
   }
   return n.join(". ");
@@ -92,7 +95,7 @@ function waitSheet(wb, name, heading, sub, rows) {
       r.replyAt ? hrs(r.workMs) : "", r.overMs ? hrs(r.overMs) : "",
       call ? fmtWhen(call.at) : "", call ? call.by || "" : "",
       wa ? fmtWhen(wa.at) : "", wa ? [wa.by, otherLine(wa) ? `(on ${wa.line})` : ""].filter(Boolean).join(" ") : "",
-      wa ? (wa.kind === "message" ? wa.preview : `A ${wa.kind}`) : "",
+      wa ? (wa.kind === "message" ? wa.preview : aKind(wa.kind)) : "",
       r.reason || "", (r.flags || []).map((f) => FLAG[f]).filter(Boolean).join(", "), r.words || "", r.ask || "",
       r.count, notes(r), link(r.dealLink, "Deal"), link(r.contactLink, "Contact"),
     ];
@@ -117,7 +120,12 @@ function waitSheet(wb, name, heading, sub, rows) {
 function meshLines(m) {
   if (!m || !m.used) return [];
   if (!m.on) return [`WARNING: WhatsApp was NOT checked on this run: ${m.why}. Emails answered only on WhatsApp may be flagged.`];
-  return [`This run: ${m.clients} clients looked up in Mesh — ${m.byNumber} found by phone number, ${m.byName} by name, ${m.notFound} not found${m.nameClash ? ` (${m.nameClash} of them because several Mesh contacts share the name)` : ""}. ${m.replies} WhatsApp messages from HOF were found in the 24-hour windows.${m.errors ? ` WARNING: ${m.errors} clients could not be checked.` : ""}`];
+  const n = (v, w) => `${v} ${w}${v === 1 ? "" : "s"}`;
+  return [
+    `This run read WhatsApp on ${linesOf(m) || "Mesh"}: ${n(m.chats, "chat")} and ${n(m.messages, "message")} since ${fmtWhen(m.since)}, ${m.hofMessages} of them sent by HOF.`,
+    `${n(m.clients, "client")} looked up — ${m.byNumber} found by phone number, ${m.byName} by name, ${m.notFound} with no chat on this number${m.nameClash ? ` (${m.nameClash} of them because several WhatsApp contacts share the name)` : ""}. ${n(m.replies, "WhatsApp message")} from HOF came after their emails.`,
+    ...(m.problems || []).map((p) => `WARNING: ${p}.`),
+  ];
 }
 
 async function buildWorkbook(r) {
@@ -223,14 +231,15 @@ async function buildWorkbook(r) {
     "Those emails are listed in their own section instead of being flagged.",
     "",
     "WHATSAPP, FROM MESH",
-    "If no email went back within 24 hours and there was no connected call, Mesh is checked too: a WhatsApp from anyone at HOF to the client in those 24 hours puts the email in its own section, \"answered on WhatsApp\", instead of flagging it.",
-    "A text, a voice note or a file all count. Voice notes are not listened to: one sent in that time means the conversation happened. Messages sent by bots or workflows, and private notes, do not count.",
-    "The client is found in Mesh by every phone number on their HubSpot contact (phone, mobile, mobile number and WhatsApp number). Only if no number finds them is their name tried, exactly as in HubSpot, and only when exactly one Mesh contact has that name.",
+    "If no email went back within 24 hours and there was no connected call, WhatsApp is checked too, through Mesh's read-only Compliance Read API: a WhatsApp from anyone at HOF to the client in those 24 hours puts the email in its own section, \"answered on WhatsApp\", instead of flagging it.",
+    "A text, a voice note or a file all count, and so does a message typed on the team phone (WhatsApp Business app). Voice notes are not listened to: one sent in that time means the conversation happened. Internal notes, campaigns, bots, automations, Mesh's own messages, and messages that failed or never left do not count.",
+    "The client is found by every phone number on their HubSpot contact (phone, mobile, mobile number and WhatsApp number). Only if no number matches is their name tried, exactly as in HubSpot, and only when exactly one WhatsApp contact on the number has that name.",
+    "Only the WhatsApp numbers the Mesh key covers are read (named below). A WhatsApp sent from any other number, such as a case manager's own, is not seen.",
     "The WhatsApp message is shown next to the email, so you can see whether it was about what the client asked.",
     ...meshLines(r.mesh),
     "",
     "LIMITS WORTH KNOWING",
-    "A reply from a personal email is not seen, a call not logged in HubSpot is not seen, and a WhatsApp from a number that is not connected to Mesh is not seen.",
+    "A reply from a personal email is not seen, a call not logged in HubSpot is not seen, and a WhatsApp from a number the Mesh key does not cover (such as a case manager's own number) is not seen.",
     "A reply to the client on any thread counts, even if it does not answer the particular question.",
     "The rules read words, not meaning. Check the client's email in HubSpot before acting on any single row.",
     "Approved leave does not pause the clock — the client is still waiting — but rows are marked so cover can be arranged.",
