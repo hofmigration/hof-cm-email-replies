@@ -44,12 +44,17 @@ function actionNote(r, words) {
 }
 
 // what was sent on WhatsApp, so the reader can see whether it was about the email
+const aKind = (k) => `${/^[aeiou]/i.test(k) ? "An" : "A"} ${k}`;       // "A voice note", "An image"
+// the WhatsApp number(s) read today, e.g. "the HOF Migration WhatsApp number"
+const linesText = (m) => { const n = ((m && m.lines) || []).map((l) => l.name).filter(Boolean); return n.length ? `the ${n.join(" and ")} WhatsApp number${n.length > 1 ? "s" : ""}` : "WhatsApp, read through Mesh"; };
+
 function waQuote(r, words) {
   if (r.verdict !== "whatsapp" || !r.waIn) return "";
-  const said = r.waIn.kind === "message" ? (words ? `“${esc(cut(r.waIn.preview, Math.min(words, 140)))}”` : "") : `A ${esc(r.waIn.kind)}${r.waIn.kind === "voice note" ? " (not listened to)" : ""}`;
+  const k = r.waIn.kind;
+  const said = k === "message" ? (words ? (r.waIn.preview ? `“${esc(cut(r.waIn.preview, Math.min(words, 140)))}”` : "A WhatsApp message") : "") : `${esc(aKind(k))}${k === "voice note" ? " (not listened to)" : ""}`;
   const a = String(r.waIn.line || "").toLowerCase().trim(), b = String(r.waIn.by || "").toLowerCase().trim();
   const line = a && !b.includes(a) && !a.includes(b) ? ` <span style="color:${C.soft}">on ${esc(r.waIn.line)}</span>` : "";
-  const byName = r.waFound === "name" ? `<br><span style="color:${C.warn}">Found in Mesh by name, not number: check it is the same person.</span>` : "";
+  const byName = r.waFound === "name" ? `<br><span style="color:${C.warn}">Found on WhatsApp by name, not number: check it is the same person.</span>` : "";
   return said ? `<div style="margin-top:5px;padding:6px 9px;background:${C.bluebg};font:400 11.5px/1.45 ${F};color:${C.ink}">${said}${line}${byName}</div>` : "";
 }
 
@@ -108,10 +113,11 @@ function buildEmail(r, caps = {}, words = 170) {
   const unread = r.unreadPct > 25
     ? `<table role="presentation" width="100%" style="margin:0 0 14px"><tr><td style="background:${C.badbg};border-left:4px solid ${C.bad};padding:10px 14px;font:400 12.5px/1.55 ${F};color:${C.bad}"><b>${r.unreadPct}% of emails came back from HubSpot with no text</b>, so they could not be judged and are not counted. Check the HubSpot token has the <i>sales-email-read</i> scope before relying on this report.</td></tr></table>` : "";
   const m = r.mesh;
-  const meshWarn = m && m.used && (!m.on || m.errors)
+  const problems = (m && m.problems) || [];
+  const meshWarn = m && m.used && (!m.on || problems.length || m.errors)
     ? `<table role="presentation" width="100%" style="margin:0 0 14px"><tr><td style="background:${C.warnbg};border-left:4px solid ${C.warn};padding:10px 14px;font:400 12.5px/1.55 ${F};color:${C.warn}">${!m.on
       ? `<b>WhatsApp was not checked today:</b> ${esc(m.why)}. Emails answered only on WhatsApp may be flagged below.`
-      : `<b>WhatsApp could not be checked for ${m.errors} client${m.errors > 1 ? "s" : ""}</b> (Mesh did not answer). Their emails are judged on email and calls only.`}</td></tr></table>` : "";
+      : `<b>Part of WhatsApp could not be read:</b> ${esc(problems.join(". ") || `${m.errors} clients could not be checked`)}. Emails answered there may be flagged below.`}</td></tr></table>` : "";
   const warn = r.missingYears && r.missingYears.length
     ? `<table role="presentation" width="100%" style="margin:0 0 14px"><tr><td style="background:${C.warnbg};border-left:4px solid ${C.warn};padding:10px 14px;font:400 12.5px/1.55 ${F};color:${C.warn}"><b>No UAE public holidays are listed for ${esc(r.missingYears.join(", "))}.</b> Holidays that year are being counted as working days — add the announced dates to config.js.</td></tr></table>` : "";
 
@@ -135,7 +141,7 @@ function buildEmail(r, caps = {}, words = 170) {
   ${section("Flagged — no reply", "Past 24 hours with no email, no connected call and no WhatsApp from HOF. Complaints first, then the longest waits. Where the client asked for something to be done, the red note says so: even if it has been done, the client must be told.", s.none, cap("flagged"), words, "None today.")}
   ${section("Flagged — replied late", "Answered by email, but after the 24 hours.", s.late, cap("flagged"), words, "None today.")}
   ${section("No email reply in 24 hours, but a connected call", "No email went back within 24 hours, but the client was reached by phone in that time (a connected call on their contact or deal).", s.call, cap("call"), words, "None today.")}
-  ${m && m.used && m.on ? section("No email reply in 24 hours, but answered on WhatsApp", "No email went back within 24 hours, but HOF sent the client a WhatsApp in that time (a text, a voice note or a file, seen in Mesh). The message is shown so you can see whether it was about the email.", s.whatsapp, cap("call"), words, "None today.") : ""}
+  ${m && m.used && m.on ? section("No email reply in 24 hours, but answered on WhatsApp", `No email went back within 24 hours, but HOF sent the client a WhatsApp in that time (a text, a voice note or a file, on ${esc(linesText(m))}). The message is shown so you can see whether it was about the email.`, s.whatsapp, cap("call"), words, "None today.") : ""}
   ${section("Still unanswered from earlier days", `Due before this report and still without any reply, connected call or WhatsApp. These keep appearing for ${SETTINGS.STILL_OPEN_DAYS} days. Oldest first.`, s.still, cap("still"), words, "")}
   ${section("Due before tomorrow's report", "Not late yet, and nobody has replied. Soonest first.", s.next, cap("next"), 0, "")}
 
@@ -143,7 +149,7 @@ function buildEmail(r, caps = {}, words = 170) {
     <b style="color:${C.body}">How this is checked.</b> A client email that needs a reply gets one within ${SETTINGS.REPLY_HOURS} hours${SETTINGS.FLAT_24_HOURS ? "" : " — Saturday, Sunday and UAE public holidays are not counted, so Friday afternoon is due Monday afternoon"}.
     Thank-yous, emails that only send documents or news with nothing asked, automatic messages and emails from HOF staff are not counted — ${r.notCountedToday} today, each listed in the sheet with the reason.
     A reply is any email from anyone at HOF to the client's address. Several client emails in a row are one wait, timed from the first.
-    With no email reply in the 24 hours, a connected call or a WhatsApp from HOF to the client in that time (a text, a voice note or a file, seen in Mesh) puts the email in its own section instead of flagging it.
+    With no email reply in the 24 hours, a connected call or a WhatsApp from HOF to the client in that time (a text, a voice note or a file, read through Mesh) puts the email in its own section instead of flagging it.${m && m.used && m.on ? ` WhatsApp is read on ${esc(linesText(m))} only; a WhatsApp from any other number, such as a case manager's own, is not seen.` : ""}
     When the client asked for something to be done (send, check, correct, book a call…) and got neither a reply nor a connected call, the row says the action was needed — even if it was done, the client has to be told.
     Every row is in the attached sheet, with links to HubSpot.
   </div>
