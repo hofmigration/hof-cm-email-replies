@@ -40,6 +40,7 @@ jobs:
         env:
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
           RESEND_KEY: ${{ secrets.RESEND_KEY }}
+          MESH_API_KEY: ${{ secrets.MESH_API_KEY }}
           SEND_EMAIL: ${{ inputs.send_email }}
           AS_OF: ${{ inputs.as_of }}
       - uses: actions/upload-artifact@v4
