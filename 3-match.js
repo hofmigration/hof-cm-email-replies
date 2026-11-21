@@ -1,7 +1,7 @@
 // 3-match.js — client emails into waits, and how each wait was answered. No network in
 // here, so every rule is tested on invented emails before it is used on real people.
 const { SETTINGS } = require("./config");
-const { DAY, HOUR, fmtWhen, span, hrs } = require("./1-clock");
+const { HOUR, fmtWhen, span, hrs } = require("./1-clock");
 
 // "a@x.com; B <b@y.com>" -> ["a@x.com", "b@y.com"]
 const addresses = (s) => (String(s || "").toLowerCase().match(/[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}/g) || []);
@@ -72,25 +72,40 @@ function judge(wait, { clock, now, calls = [], whatsapp = null }) {
   };
 }
 
-// Which section of today's report each wait belongs to.
+// Each client email is flagged once, on the day its 24 hours end. A wait that fell due before
+// this report (and so was reported then) comes back only when the client wrote again: from
+// their first email whose own 24 hours end after the last cut-off, as a wait of its own —
+// they are chasing. -> { w, again } to judge and show, or null when there is nothing new.
+function partToShow(w, clock, window) {
+  if (clock.deadline(w.emails[0].at) > window.start) return { w, again: null };
+  const k = w.emails.findIndex((e, i) => i > 0 && clock.deadline(e.at) > window.start);
+  if (k < 0) return null;
+  return { w: { emails: w.emails.slice(k), reply: w.reply }, again: { firstAt: w.emails[0].at, earlier: k } };
+}
+
+// High: a complaint or refund, a chaser (in words, or the client wrote again before an answer),
+// a problem or mistake pointed out, or urgent or tied to a date. Anything else needing a reply
+// is Medium. Low emails never reach a wait.
+const HIGH_FLAGS = ["complaint", "chaser", "problem", "urgent"];
+const priorityOf = (flags, chased, again) => (again || chased > 0 || (flags || []).some((f) => HIGH_FLAGS.includes(f)) ? "high" : "medium");
+
+// Which section of today's report each wait belongs to. High priority always comes first.
 //   due      — its 24 hours ended between yesterday's cut-off and today's
-//   still    — due before that, and still no email, no connected call and no WhatsApp at all
 //   next     — not due yet, nobody has answered
-function sortOut(rows, window, now) {
+function sortOut(rows, window) {
   const inWin = (r) => r.due > window.start && r.due <= window.end;
   const due = rows.filter(inWin);
+  const high = (a, b) => (b.priority === "high") - (a.priority === "high");
   const complaintFirst = (a, b) => (b.flags || []).includes("complaint") - (a.flags || []).includes("complaint");
-  const byCm = (a, b) => String(a.cm).localeCompare(String(b.cm)) || a.start - b.start;
+  const byCm = (a, b) => high(a, b) || String(a.cm).localeCompare(String(b.cm)) || a.start - b.start;
   return {
     due,
     onTime: due.filter((r) => r.verdict === "on-time").sort(byCm),
     call: due.filter((r) => r.verdict === "call").sort(byCm),
     whatsapp: due.filter((r) => r.verdict === "whatsapp").sort(byCm),
-    late: due.filter((r) => r.verdict === "late").sort((a, b) => complaintFirst(a, b) || b.overMs - a.overMs),
-    none: due.filter((r) => r.verdict === "none").sort((a, b) => complaintFirst(a, b) || b.overMs - a.overMs),
-    still: rows.filter((r) => r.due <= window.start && r.start >= now - SETTINGS.STILL_OPEN_DAYS * DAY && r.replyAt === null && !r.callIn && !r.callAfter && !r.waIn && !r.waAfter)
-      .sort((a, b) => a.start - b.start),
-    next: rows.filter((r) => r.due > window.end && r.verdict === "waiting").sort((a, b) => a.due - b.due),
+    late: due.filter((r) => r.verdict === "late").sort((a, b) => high(a, b) || complaintFirst(a, b) || b.overMs - a.overMs),
+    none: due.filter((r) => r.verdict === "none").sort((a, b) => high(a, b) || complaintFirst(a, b) || b.overMs - a.overMs),
+    next: rows.filter((r) => r.due > window.end && r.verdict === "waiting").sort((a, b) => high(a, b) || a.due - b.due),
   };
 }
 
@@ -98,16 +113,17 @@ function sortOut(rows, window, now) {
 function perCaseManager(s) {
   const names = Object.values(SETTINGS.CASE_MANAGERS);
   const count = (list, n) => list.filter((r) => r.cm === n).length;
+  const flagged = [...s.none, ...s.late];
   const lines = names.map((n) => {
     const onTime = count(s.onTime, n), call = count(s.call, n), whatsapp = count(s.whatsapp || [], n), late = count(s.late, n), none = count(s.none, n);
     const judged = onTime + late + none;
-    return { cm: n, due: count(s.due, n), onTime, call, whatsapp, late, none, still: count(s.still, n), next: count(s.next, n),
-      pct: judged ? Math.round((onTime / judged) * 100) : null };
-  }).sort((a, b) => (b.none + b.late + b.still) - (a.none + a.late + a.still) || a.cm.localeCompare(b.cm));
+    return { cm: n, due: count(s.due, n), onTime, call, whatsapp, late, none, high: flagged.filter((r) => r.cm === n && r.priority === "high").length,
+      next: count(s.next, n), pct: judged ? Math.round((onTime / judged) * 100) : null };
+  }).sort((a, b) => b.high - a.high || (b.none + b.late) - (a.none + a.late) || a.cm.localeCompare(b.cm));
   const sum = (k) => lines.reduce((t, l) => t + l[k], 0);
   const judged = sum("onTime") + sum("late") + sum("none");
   const total = { cm: "All case managers", due: sum("due"), onTime: sum("onTime"), call: sum("call"), whatsapp: sum("whatsapp"), late: sum("late"), none: sum("none"),
-    still: sum("still"), next: sum("next"), pct: judged ? Math.round((sum("onTime") / judged) * 100) : null };
+    high: sum("high"), next: sum("next"), pct: judged ? Math.round((sum("onTime") / judged) * 100) : null };
   return { lines, total };
 }
 
@@ -129,4 +145,4 @@ function statusText(r, now) {
   }
 }
 
-module.exports = { addresses, sentOk, buildWaits, connected, judge, sortOut, perCaseManager, statusText, ms };
+module.exports = { addresses, sentOk, buildWaits, connected, judge, partToShow, priorityOf, sortOut, perCaseManager, statusText, ms, HIGH_FLAGS };
