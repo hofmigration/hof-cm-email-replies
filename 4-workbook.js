@@ -11,7 +11,8 @@ const thin = { style: "thin", color: { argb: LINE } };
 const BOX = { top: thin, left: thin, bottom: thin, right: thin };
 const TONE = { none: [RED, REDTX], late: [AMBER, AMBERTX], call: [BLUE, BLUETX], whatsapp: [BLUE, BLUETX], "on-time": [GREEN, GREENTX], waiting: [PANEL, "FF3F4A5A"] };
 const VERDICT = { none: "No reply", late: "Replied late", call: "Call, no email in 24h", whatsapp: "WhatsApp, no email in 24h", "on-time": "On time", waiting: "Not due yet" };
-const FLAG = { complaint: "Complaint", chaser: "Chasing", problem: "Problem raised", call: "Asked for a call" };
+const FLAG = { complaint: "Complaint", chaser: "Chasing", problem: "Problem raised", urgent: "Urgent or dated", call: "Asked for a call" };
+const PRIORITY = { high: ["High", RED, REDTX], medium: ["Medium", AMBER, AMBERTX], low: ["Low", PANEL, "FF868E9B"] };
 
 function title(ws, text, sub, width = 10) {
   const last = String.fromCharCode(64 + Math.min(width, 26));
@@ -47,7 +48,7 @@ const link = (url, text) => (url ? { text, hyperlink: url } : "");
 
 const COLS = [
   ["Case manager", 20], ["Client", 24], ["Client email", 28], ["Subject", 34], ["Client wrote", 17], ["Due by", 17],
-  ["Status", 20], ["Reply sent", 17], ["Replied by", 18], ["Working hrs to reply", 11], ["Over by (working hrs)", 11],
+  ["Status", 20], ["Priority", 10], ["Reply sent", 17], ["Replied by", 18], ["Working hrs to reply", 11], ["Over by (working hrs)", 11],
   ["Connected call", 17], ["Called by", 18], ["WhatsApp from HOF", 17], ["WhatsApp sent by", 18], ["WhatsApp message", 40],
   ["Why it needs a reply", 30], ["Flags", 20], ["What the client wrote", 70],
   ["Action the client asked for", 40], ["Emails in this wait", 10], ["Notes", 30], ["Deal", 12], ["Contact", 12],
@@ -62,6 +63,7 @@ const linesOf = (m) => ((m && m.lines) || []).map((l) => (l.phone ? `${l.name} (
 
 function notes(r) {
   const n = [];
+  if (r.again) n.push(`Client wrote again: their first email (${fmtWhen(r.again.firstAt)}) was flagged on an earlier day, and this one has had no answer in 24 hours either`);
   if (r.ccOnly) n.push("Case manager was in CC only");
   if (r.onLeave && r.onLeave.length) n.push(`On leave: ${r.onLeave.join(", ")}`);
   if (r.otherCms && r.otherCms.length) n.push(`Also emailed: ${r.otherCms.join(", ")}`);
@@ -91,6 +93,7 @@ function waitSheet(wb, name, heading, sub, rows) {
     const x = ws.getRow(4 + i);
     x.values = [
       r.cm, r.client, r.clientEmail, r.subject, fmtWhen(r.start), fmtWhen(r.due), VERDICT[r.verdict] || r.verdict,
+      (PRIORITY[r.priority] || ["", ""])[0],
       r.replyAt ? fmtWhen(r.replyAt) : "", r.replyBy || "",
       r.replyAt ? hrs(r.workMs) : "", r.overMs ? hrs(r.overMs) : "",
       call ? fmtWhen(call.at) : "", call ? call.by || "" : "",
@@ -107,6 +110,11 @@ function waitSheet(wb, name, heading, sub, rows) {
     const [bg, tx] = TONE[r.verdict] || [PANEL, "FF1F2937"];
     x.getCell(7).fill = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
     x.getCell(7).font = { name: "Arial", size: 10, bold: true, color: { argb: tx } };
+    const pr = PRIORITY[r.priority];
+    if (pr) {
+      x.getCell(COL("Priority")).fill = { type: "pattern", pattern: "solid", fgColor: { argb: pr[1] } };
+      x.getCell(COL("Priority")).font = { name: "Arial", size: 10, bold: true, color: { argb: pr[2] } };
+    }
     if ((r.flags || []).includes("complaint")) x.getCell(COL("Flags")).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } };
     const ask = COL("Action the client asked for");
     if (r.verdict === "none" && r.ask) { x.getCell(ask).fill = { type: "pattern", pattern: "solid", fgColor: { argb: RED } }; x.getCell(ask).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } }; }
@@ -138,16 +146,17 @@ async function buildWorkbook(r) {
   const sm = wb.addWorksheet("Summary", { views: [{ showGridLines: false }] });
   sm.columns = [{ width: 26 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 11 }, { width: 10 }, { width: 10 }, { width: 12 }, { width: 10 }, { width: 11 }];
   title(sm, `Case manager email replies — ${fmtDay(r.window.end)}`, windowText, 10);
+  const hi = (list) => list.filter((x) => x.priority === "high").length;
   const kpi = [
     ["Fell due in this report", s.due.length, null],
     ["Answered by email within 24 hours", s.onTime.length, GREEN],
-    ["Flagged — no reply", s.none.length, s.none.length ? RED : null],
-    ["Flagged — replied late", s.late.length, s.late.length ? AMBER : null],
+    ["High priority — no reply", hi(s.none), hi(s.none) ? RED : null],
+    ["Medium priority — no reply", s.none.length - hi(s.none), s.none.length - hi(s.none) ? RED : null],
+    ["Replied late (high and medium)", s.late.length, s.late.length ? AMBER : null],
     ["No email in 24 hours, but a connected call", s.call.length, s.call.length ? BLUE : null],
     ["No email in 24 hours, but answered on WhatsApp", (s.whatsapp || []).length, (s.whatsapp || []).length ? BLUE : null],
-    ["Still unanswered from earlier days", s.still.length, s.still.length ? RED : null],
     ["Due before the next report", s.next.length, null],
-    ["Emails received in the last 24 hours that needed no reply", r.notCountedToday, null],
+    ["Low priority — received in the last 24 hours, nothing to answer, not counted", r.notCountedToday, null],
   ];
   let row = 4;
   for (const [k, v, fill] of kpi) {
@@ -161,41 +170,43 @@ async function buildWorkbook(r) {
     row++;
   }
   row += 1;
-  header(sm, row, ["Case manager", "Due", "On time", "By call", "By WhatsApp", "Late", "No reply", "Older, open", "Due next", "On time %"]);
+  header(sm, row, ["Case manager", "Due", "On time", "By call", "By WhatsApp", "Late", "No reply", "High flagged", "Due next", "On time %"]);
   row++;
   for (const l of [...r.byCm.lines, r.byCm.total]) {
     const x = sm.getRow(row);
-    x.values = [l.cm, l.due, l.onTime, l.call, l.whatsapp || 0, l.late, l.none, l.still, l.next, l.pct == null ? "—" : l.pct / 100];
+    x.values = [l.cm, l.due, l.onTime, l.call, l.whatsapp || 0, l.late, l.none, l.high || 0, l.next, l.pct == null ? "—" : l.pct / 100];
     x.eachCell({ includeEmpty: true }, (cell) => { cell.border = BOX; cell.font = { name: "Arial", size: 10, bold: l === r.byCm.total }; });
     if (l.pct != null) {
       x.getCell(10).numFmt = "0%";
       x.getCell(10).fill = { type: "pattern", pattern: "solid", fgColor: { argb: l.pct >= 90 ? GREEN : l.pct >= 70 ? AMBER : RED } };
     }
     if (l.none) x.getCell(7).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } };
-    if (l.still) x.getCell(8).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } };
+    if (l.high) x.getCell(8).font = { name: "Arial", size: 10, bold: true, color: { argb: REDTX } };
     row++;
   }
-  sm.getCell(`A${row + 1}`).value = "On time % is of the emails that were not handled by phone or WhatsApp: on time ÷ (on time + late + no reply).";
+  sm.getCell(`A${row + 1}`).value = "On time % is of the emails that were not handled by phone or WhatsApp: on time ÷ (on time + late + no reply). High flagged: high-priority emails with no reply or a late one.";
   sm.getCell(`A${row + 1}`).font = { name: "Arial", size: 9.5, italic: true, color: { argb: "FF868E9B" } };
 
   // ---------- the rows ----------
-  waitSheet(wb, "Flagged", "Flagged — not answered within 24 hours", `${windowText} No reply at all first, then late replies; the longest waits at the top.`, [...s.none, ...s.late]);
+  waitSheet(wb, "Flagged", "Flagged — not answered within 24 hours", `${windowText} No reply at all first, then late replies; High priority first in each, then the longest waits.`, [...s.none, ...s.late]);
   waitSheet(wb, "Call, no email", "No email reply in 24 hours, but a connected call", "The client was reached by phone within the 24 hours — a connected call on their contact or deal.", s.call);
   waitSheet(wb, "WhatsApp, no email", "No email reply in 24 hours, but answered on WhatsApp", "HOF sent the client a WhatsApp within the 24 hours (a text, a voice note or a file), seen in Mesh. The message is shown so you can see whether it was about the email.", s.whatsapp || []);
-  waitSheet(wb, "Still unanswered", "Still unanswered from earlier days", `Due before this report, and still without any email reply, connected call or WhatsApp. Kept for ${SETTINGS.STILL_OPEN_DAYS} days.`, s.still);
-  waitSheet(wb, "Due next", "Due before the next report", "Not late yet, and nobody has replied.", s.next);
+  waitSheet(wb, "Due next", "Due before the next report", "Not late yet, and nobody has replied. High priority first.", s.next);
   waitSheet(wb, "On time", "Answered by email within 24 hours", windowText, s.onTime);
 
   // ---------- every email received, with the decision ----------
   const ig = wb.addWorksheet("All emails received", { views: [{ state: "frozen", ySplit: 3, showGridLines: false }] });
   ig.columns = [{ width: 17 }, { width: 20 }, { width: 30 }, { width: 36 }, { width: 13 }, { width: 40 }, { width: 80 }];
-  title(ig, "Every client email received in the last 24 hours, and the decision", "Use this to check the rules: anything marked No that clearly needed an answer should be reported, and the rule changed in config.js or 2-classify.js.", 7);
-  header(ig, 3, ["Received", "Case manager", "From", "Subject", "Needs a reply?", "Why", "What they wrote"]);
+  title(ig, "Every client email received in the last 24 hours, and the decision", "Use this to check the rules: anything marked Low that clearly needed an answer should be reported, and the rule changed in config.js or 2-classify.js. High and Medium need a reply within 24 hours; Low has nothing to answer and is not counted.", 7);
+  header(ig, 3, ["Received", "Case manager", "From", "Subject", "Priority", "Why", "What they wrote"]);
   r.intake.forEach((e, i) => {
     const x = ig.getRow(4 + i);
-    x.values = [fmtWhen(e.at), e.cm, e.from, e.subject, e.counted ? "Yes" : "No", e.reason || "", e.words || ""];
+    const pr = PRIORITY[e.priority || (e.counted ? "medium" : "low")];
+    const why = [e.reason || "", ...((e.flags || []).includes("urgent") && e.counted ? ["urgent or dated"] : [])].filter(Boolean).join(" · ");
+    x.values = [fmtWhen(e.at), e.cm, e.from, e.subject, pr[0], why, e.words || ""];
     x.eachCell({ includeEmpty: true }, (cell) => { cell.border = BOX; cell.alignment = { vertical: "top", wrapText: true }; cell.font = { name: "Arial", size: 10 }; });
-    x.getCell(5).fill = { type: "pattern", pattern: "solid", fgColor: { argb: e.counted ? AMBER : PANEL } };
+    x.getCell(5).fill = { type: "pattern", pattern: "solid", fgColor: { argb: pr[1] } };
+    x.getCell(5).font = { name: "Arial", size: 10, bold: true, color: { argb: pr[2] } };
   });
   if (r.intake.length) ig.autoFilter = { from: "A3", to: `G${3 + r.intake.length}` };
 
@@ -212,12 +223,15 @@ async function buildWorkbook(r) {
       ? `A client email that needs a reply gets one within ${SETTINGS.REPLY_HOURS} hours, counted straight through.`
       : `A client email that needs a reply gets one within ${SETTINGS.REPLY_HOURS} hours. Saturday, Sunday and UAE public holidays are not counted, so Friday afternoon is due Monday afternoon and Monday afternoon is due Tuesday afternoon.`,
     `Each report covers the emails whose 24 hours ended between the previous ${String(SETTINGS.REPORT_HOUR).padStart(2, "0")}:00 cut-off and this one, so every email is judged exactly once. Times are Pakistan time.`,
+    "An email is flagged once, on the day its 24 hours end. If the client writes again and that email also goes unanswered for 24 hours, it is flagged again, as High priority, marked \"Wrote again\".",
     ...(r.missingYears && r.missingYears.length ? [`WARNING: no UAE holidays are listed for ${r.missingYears.join(", ")}, so holidays in that year were counted as working days.`] : []),
     "",
-    "WHICH EMAILS NEED A REPLY",
+    "WHICH EMAILS NEED A REPLY, AND THEIR PRIORITY",
     "Only the client's new words are read — the quoted thread underneath, signatures and phone footers are removed first.",
-    "Counted: complaints, chasers (\"any update?\", \"it's been 9 days\"), a problem or mistake pointed out, a request for a call or meeting, a question, a request (please advise / confirm / send / check), and long messages with no clear question (counted to be safe).",
-    `Not counted: emails from HOF staff, automatic messages (auto-replies, reactions, delivery notices, no-reply senders), thank-yous and acknowledgements, and emails that only send documents or news with nothing asked — those need an acknowledgement, not a reply${SETTINGS.COUNT_DOCUMENTS_ONLY ? " (documents are currently COUNTED because COUNT_DOCUMENTS_ONLY is on)" : ""}.`,
+    "HIGH (needs a reply, listed first): a complaint or refund (\"not happy\", \"refund\", \"cancel my case\"), a chaser (\"any update?\", \"it's been 9 days\", or the client wrote again before an answer), a problem or mistake pointed out, or something urgent or tied to a date — \"urgent\", \"asap\", a deadline, an appointment, biometrics, an interview, a visa or passport expiring, \"by Monday\". \"Not urgent\", \"no rush\" and the client's own promises (\"I will send it asap\") do not count as urgent.",
+    "MEDIUM (needs a reply): any other question, request (please advise / confirm / send / check) or request for a call or meeting.",
+    `LOW (nothing to answer — not counted, and not shown in the email): emails from HOF staff, automatic messages (auto-replies, reactions, delivery notices, no-reply senders), thank-yous and acknowledgements, emails that only send documents or information with nothing asked, and long messages with no question or request${SETTINGS.COUNT_DOCUMENTS_ONLY ? ". (Documents are currently COUNTED, as Medium, because COUNT_DOCUMENTS_ONLY is on.)" : ""}${SETTINGS.COUNT_LONG_MESSAGES ? ". (Long messages are currently COUNTED, as Medium, because COUNT_LONG_MESSAGES is on.)" : ""}.`,
+    "High and Medium both have the same 24 hours; High is listed first everywhere.",
     "A thank-you is read without what it thanks for: \"Thank you for the clarification\", \"Kindly noted\" and \"Thanks, keep me posted\" are acknowledgements. \"Thanks for the update, please send the draft\" still asks for the draft.",
     "",
     "ACTIONS ASKED FOR",
