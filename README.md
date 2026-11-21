@@ -3,13 +3,19 @@
 Every morning at **11:00 Pakistan time** you get one email: every client email to the
 14 case managers whose **24 hours ran out since yesterday at 11:00**, and what happened to it.
 
-- **Flagged — no reply** · past 24 hours, no email back, no connected call and no WhatsApp from HOF
-- **Flagged — replied late** · answered, but after the 24 hours
+Each client email that needs a reply has a **priority** — High or Medium. Low ones (nothing
+to answer) are left out of the email.
+
+- **High priority — no reply** · complaints and refunds, chasers, mistakes pointed out, urgent or dated requests: past 24 hours with no email, no connected call and no WhatsApp from HOF
+- **Medium priority — no reply** · any other question or request, same rule
+- **Replied late** · answered, but after the 24 hours (High first)
 - **No email reply in 24 hours, but a connected call** · its own section, as asked
 - **No email reply in 24 hours, but answered on WhatsApp** · its own section, with what was sent (read from Mesh)
-- **Still unanswered from earlier days** · keeps reappearing until someone answers (up to 14 days)
-- **Due before tomorrow's report** · not late yet, nobody has replied — a heads-up
-- **By case manager** · one line each, with an on-time %
+- **Due before tomorrow's report** · not late yet, nobody has replied — a heads-up (High first)
+- **By case manager** · one line each, with how many High were flagged and an on-time %
+
+Each email is flagged **once**, on the day its 24 hours end. If the client writes again and that
+email also goes unanswered for 24 hours, it is flagged again — as High, marked *Wrote again*.
 
 Every row is in the attached Excel sheet, with links to the client's deal and contact.
 Read-only — nothing in HubSpot or Mesh is changed.
@@ -48,25 +54,28 @@ comes unless something did.
 WhatsApp review. Friday 3pm is due Monday 3pm; Monday 3pm is due Tuesday 3pm. Want a plain
 24 hours with weekends? Set `FLAT_24_HOURS: true` in `config.js`.
 
-**Which emails need a reply.** Only the client's own new words are read — the quoted thread
-underneath, signatures and "Sent from my iPhone" are cut off first.
+**Which emails need a reply, and their priority.** Only the client's own new words are read —
+the quoted thread underneath, signatures and "Sent from my iPhone" are cut off first.
 
-| Counted | Not counted |
-|---|---|
-| a complaint | anything from HOF staff |
-| a chaser — "any update?", "it's been 20 days" | automatic messages — auto-replies, Gmail reactions, no-reply senders |
-| a problem or mistake pointed out | thank-yous and acknowledgements — "noted", "kindly noted", "thank you for the update", "thank you for the clarification", "thanks, keep me posted" |
-| a request for a call or meeting | documents or news sent with nothing asked — these need an acknowledgement, not a reply |
-| a question (with or without a "?") | |
-| a request — please advise / confirm / check / send | |
-| a long message with no clear question (counted to be safe) | |
+| High — needs a reply, listed first | Medium — needs a reply | Low — nothing to answer, not counted |
+|---|---|---|
+| a complaint or refund — "not happy", "refund", "cancel my case" | a question (with or without a "?") | anything from HOF staff |
+| a chaser — "any update?", "it's been 20 days", "still waiting for the draft", or writing again before an answer | a request — please advise / confirm / check / send | automatic messages — auto-replies, Gmail reactions, no-reply senders |
+| a problem or mistake pointed out | a request for a call or meeting | thank-yous and acknowledgements — "noted", "kindly noted", "thank you for the clarification", "thanks, keep me posted" |
+| urgent or tied to a date — "urgent", "asap", a deadline, an appointment, biometrics, an interview, a visa or passport expiring, "by Monday" | | documents or information sent with nothing asked, long messages included |
+
+High and Medium have the same 24 hours; High is simply listed first, in red. Urgent or dated
+words only raise an email that already needs a reply — they don't make one need a reply on
+their own. "Not urgent", "no rush" and the client's own promises ("I will send it asap") are not
+urgent. Only the client's own subject line counts towards urgency, not a "Re:" one.
 
 A thank-you is read without what it thanks for, so "Thank you for the clarification" asks for
 nothing, while "Thanks for the update, please send the draft" still asks for the draft.
 
 Every email received in the last 24 hours is in the sheet's **All emails received** tab, with
-the decision and the reason — so you can check the rules rather than trust them. If you think
-documents-only emails should count too, set `COUNT_DOCUMENTS_ONLY: true`.
+its priority and the reason — so you can check the rules rather than trust them. If you think
+documents-only emails should count too, set `COUNT_DOCUMENTS_ONLY: true`; for long messages with
+no question, `COUNT_LONG_MESSAGES: true` (both then count as Medium).
 
 **What counts as an answer.** Any email from anyone at HOF to the client's address. Three
 client emails in a row are one wait, timed from the first.
@@ -146,4 +155,4 @@ longer are, and nothing new started being counted.
 ## Changing a rule
 
 Everything is in `config.js`. Every rule has a test in `selftest.js`, which runs before each
-report — `162 passed, 0 failed` — and if a rule breaks, the report doesn't go out.
+report — `200 passed, 0 failed` — and if a rule breaks, the report doesn't go out.
