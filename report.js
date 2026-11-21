@@ -1,13 +1,16 @@
 // report.js — the daily run, at 11am Pakistan time.
 //
 //  1. Read every email that reached the case managers' inboxes over the last few weeks.
-//  2. Decide which ones need a reply (2-classify.js) — thank-yous, documents with nothing
-//     asked, automatic messages and staff emails do not.
+//  2. Decide which ones need a reply, and their priority (2-classify.js): High (complaint,
+//     chaser, problem pointed out, urgent or dated), Medium (any other question or request),
+//     Low (nothing to answer — thank-yous, documents or information only, automatic
+//     messages, staff emails), which is left out of the report's email.
 //  3. Group each client's emails into waits, and find the first email HOF sent back.
 //  4. Anything not answered by email within 24 working hours is checked again: a reply from
 //     anyone else at HOF, a connected call on the client's contact or deal, and a WhatsApp
 //     from HOF to the client, read through Mesh's Compliance Read API (6-mesh.js).
-//  5. Email the report, with every row in an attached sheet.
+//  5. Email the report, High first, with every row in an attached sheet. Each email is
+//     flagged once, on the day its 24 hours end; a client who writes again is flagged again.
 //
 // Read-only. Nothing in HubSpot or Mesh is changed.
 const fs = require("fs");
@@ -21,14 +24,14 @@ const { buildWorkbook } = require("./4-workbook");
 const { fitEmail, sendEmail } = require("./5-email");
 const Mesh = require("./6-mesh");
 
-const RANK = ["complaint", "chaser", "problem", "call", "question", "request", "long", "subject", "documentsCounted"];
+const RANK = ["complaint", "chaser", "problem", "call", "question", "request", "longCounted", "subject", "documentsCounted"];
 
 async function main() {
   if (!process.env.HUBSPOT_TOKEN) throw new Error("No HUBSPOT_TOKEN secret.");
   const now = Date.now();
   const clock = T.makeClock();
   const window = T.reportWindow(process.env.AS_OF, now);
-  const readFrom = window.end - (SETTINGS.STILL_OPEN_DAYS + 3) * T.DAY;
+  const readFrom = window.end - (SETTINGS.LOOK_BACK_DAYS || 17) * T.DAY;
   const cmIds = Object.keys(SETTINGS.CASE_MANAGERS);
   console.log(`=== Case manager email replies — ${T.fmtDay(window.end)} ===`);
   console.log(`Due in this report: ${T.fmtWhen(window.start)} to ${T.fmtWhen(window.end)} (Pakistan time). Reading from ${T.fmtWhen(readFrom)}.`);
@@ -55,7 +58,8 @@ async function main() {
       subject: p.hs_email_subject || "", ownerId: String(p.hubspot_owner_id || ""), cls };
   }).filter((e) => e.from && e.at);
   const needing = emails.filter((e) => e.cls.needs);
-  console.log(`Client emails read: ${emails.length} — ${needing.length} need a reply, ${emails.length - needing.length} do not.`);
+  const nHigh = needing.filter((e) => e.cls.priority === "high").length;
+  console.log(`Client emails read: ${emails.length} — ${needing.length} need a reply (${nHigh} high, ${needing.length - nHigh} medium), ${emails.length - needing.length} low (nothing to answer).`);
   if (!emails.length) console.log("!! No emails found at all. Check the token can read emails (the sales-email-read scope).");
   // if HubSpot is not handing over email bodies, say so loudly rather than report "nothing due"
   const unread = emails.filter((e) => e.cls.key === "empty").length;
@@ -116,9 +120,10 @@ async function main() {
   // ---- 4. a second look at anything not answered on time by the case manager ----
   const deep = [];
   for (const c of clients.values()) {
-    // only waits today's report can show: due today, not yet due, or still without a reply
-    const open = waitsFor(c).map((w) => ({ w, j: M.judge(w, { clock, now }) }))
-      .filter((x) => x.j.verdict !== "on-time" && (x.j.due > window.start || x.j.replyAt === null));
+    // only what today's report can show: due today or before the next report, including a
+    // client who wrote again after an earlier email was flagged
+    const open = waitsFor(c).map((w0) => M.partToShow(w0, clock, window)).filter(Boolean)
+      .map((p) => ({ ...p, j: M.judge(p.w, { clock, now }) })).filter((x) => x.j.verdict !== "on-time");
     if (open.length && (c.contactId || c.dealIds.length)) deep.push({ c, since: Math.min(...open.map((x) => x.j.start)) });
   }
   // WhatsApp: every chat and every HOF message on the Mesh number(s), read once, from the
@@ -149,8 +154,14 @@ async function main() {
   const leave = SETTINGS.LEAVE || {};
   const rows = [];
   for (const c of clients.values()) {
-    for (const w of waitsFor(c)) {
+    for (const w0 of waitsFor(c)) {
+      // each email is flagged once, on the day its 24 hours end (see M.partToShow)
+      const part = M.partToShow(w0, clock, window);
+      if (!part) continue;
+      const { w, again } = part;
       const j = M.judge(w, { clock, now, calls: c.calls, whatsapp: c.wa ? c.wa.replies : null });
+      // the client wrote again and was answered within 24 hours this time: nothing new to report
+      if (again && !["none", "late", "waiting"].includes(j.verdict)) continue;
       const first = w.emails[0];
       const cmId = first.ownerId;
       const cm = nameOf(cmId);
@@ -164,7 +175,9 @@ async function main() {
         otherCms: [...new Set(w.emails.map((e) => e.ownerId).filter((id) => id !== cmId).map(nameOf))],
         client: c.name, clientEmail: c.key, subject: cleanSubject(first.subject) || "(no subject)",
         reason: (w.emails.find((e) => e.cls.key === key) || first).cls.reason,
-        flags: [...new Set(w.emails.flatMap((e) => e.cls.flags))],
+        flags: [...new Set([...w.emails.flatMap((e) => e.cls.flags), ...(again || j.chased ? ["chaser"] : [])])],
+        // wrote again after an earlier email was flagged: { firstAt, earlier (emails before this one) }
+        again,
         words: snippet(first.cls.words, 400), count: w.emails.length,
         ask: asked ? asked.cls.ask : "",
         replyBy: w.reply ? nameOf(w.reply.ownerId) : "",
@@ -177,18 +190,20 @@ async function main() {
         // with them on the number), "clash" (two WhatsApp contacts with that name), "" (not checked)
         waFound: c.wa ? (c.wa.found ? c.wa.how : c.wa.clash ? "clash" : "none") : "",
       };
+      row.priority = M.priorityOf(row.flags, j.chased, again);
       if (row.callIn) row.callIn.by = nameOf(row.callIn.ownerId);
       if (row.callAfter) row.callAfter.by = nameOf(row.callAfter.ownerId);
       row.status = M.statusText(row, now);
       rows.push(row);
     }
   }
-  const s = M.sortOut(rows, window, now);
+  const s = M.sortOut(rows, window);
   const byCm = M.perCaseManager(s);
 
   // every email received in the last 24 hours, and what was decided about it
   const intake = emails.filter((e) => e.at > window.start && e.at <= window.end).sort((a, b) => a.at - b.at).map((e) => ({
-    at: e.at, cm: nameOf(e.ownerId), from: e.from, subject: e.subject, counted: e.cls.needs, reason: e.cls.reason, words: snippet(e.cls.words, 300),
+    at: e.at, cm: nameOf(e.ownerId), from: e.from, subject: e.subject, counted: e.cls.needs, priority: e.cls.priority,
+    reason: e.cls.reason, flags: e.cls.flags, words: snippet(e.cls.words, 300),
   }));
 
   const years = [...new Set([new Date(readFrom).getUTCFullYear(), new Date(now).getUTCFullYear()])];
@@ -203,12 +218,13 @@ async function main() {
     readFrom, hubspotCalls: H.stats.calls, mesh };
 
   // ---- the log ----
-  console.log(`\nFell due: ${s.due.length} — on time ${s.onTime.length}, by call ${s.call.length}, by WhatsApp ${s.whatsapp.length}, late ${s.late.length}, no reply ${s.none.length}`);
+  const hi = (list) => list.filter((x) => x.priority === "high").length;
+  console.log(`\nFell due: ${s.due.length} — on time ${s.onTime.length}, by call ${s.call.length}, by WhatsApp ${s.whatsapp.length}, late ${s.late.length} (${hi(s.late)} high), no reply ${s.none.length} (${hi(s.none)} high)`);
   if (mesh.on) console.log(`WhatsApp (Mesh, ${mesh.lines.map((l) => l.name).join(", ")}): ${mesh.clients} clients looked up — ${mesh.byNumber} found by number, ${mesh.byName} by name, ${mesh.notFound} with no chat there` +
     `${mesh.nameClash ? ` (${mesh.nameClash} names shared by several WhatsApp contacts)` : ""}; ${mesh.replies} HOF messages after their emails; ${mesh.requests} requests to Mesh.`);
-  console.log(`Still unanswered from earlier: ${s.still.length}. Due before the next report: ${s.next.length}.`);
-  console.log(`Asked for something to be done, and no reply or connected call: ${s.none.filter((x) => x.ask).length} today, ${s.still.filter((x) => x.ask).length} from earlier days.`);
-  for (const l of byCm.lines) console.log(`  ${l.cm.padEnd(22)} due ${String(l.due).padStart(3)}  on time ${String(l.onTime).padStart(3)}  call ${String(l.call).padStart(2)}  WhatsApp ${String(l.whatsapp).padStart(2)}  late ${String(l.late).padStart(2)}  none ${String(l.none).padStart(2)}  still ${String(l.still).padStart(2)}`);
+  console.log(`Client wrote again after an earlier email was flagged: ${rows.filter((x) => x.again && (x.verdict === "none" || x.verdict === "late") && s.due.includes(x)).length}. Due before the next report: ${s.next.length}.`);
+  console.log(`Asked for something to be done, and no reply or connected call: ${s.none.filter((x) => x.ask).length}.`);
+  for (const l of byCm.lines) console.log(`  ${l.cm.padEnd(22)} due ${String(l.due).padStart(3)}  on time ${String(l.onTime).padStart(3)}  call ${String(l.call).padStart(2)}  WhatsApp ${String(l.whatsapp).padStart(2)}  late ${String(l.late).padStart(2)}  none ${String(l.none).padStart(2)}  high ${String(l.high).padStart(2)}`);
   console.log(`HubSpot requests: ${H.stats.calls} (${H.stats.retries} retried).`);
 
   // ---- the files ----
@@ -224,8 +240,8 @@ async function main() {
   if (!SETTINGS.SEND_EMAIL) { console.log("Not emailed (send_email is off)."); return; }
   if (quiet && !SETTINGS.EMAIL_ON_QUIET_DAYS) { console.log("A weekend or holiday with nothing due — no email sent."); return; }
   const flagged = s.late.length + s.none.length;
-  const subject = `CM email replies · ${T.fmtDay(window.end).replace(/ \d{4}$/, "")} · ${flagged} flagged, ${s.call.length} by call, ${s.whatsapp.length} by WhatsApp, ${s.onTime.length} on time` +
-    (s.still.length ? ` · ${s.still.length} still unanswered` : "");
+  const highFlagged = hi(s.late) + hi(s.none);
+  const subject = `CM email replies · ${T.fmtDay(window.end).replace(/ \d{4}$/, "")} · ${flagged} flagged${flagged ? ` (${highFlagged} high)` : ""}, ${s.call.length} by call, ${s.whatsapp.length} by WhatsApp, ${s.onTime.length} on time`;
   const ok = await sendEmail(subject, html2, { filename: path.basename(xlsx), content: fs.readFileSync(xlsx).toString("base64") });
   if (ok) console.log(`Emailed to ${SETTINGS.REPORT_TO}${SETTINGS.CC.length ? ` (cc ${SETTINGS.CC.join(", ")})` : ""}.`);
   else { console.log("!! The email was not sent. The sheet and email.html are in this run's Artifacts."); process.exitCode = 1; }
