@@ -57,7 +57,7 @@ needs("times offered for a meeting", "Thank you for confirmation. I am available
 needs("a complaint", "I have a lot of mistakes in the LOR and I am not happy why I am paying to HOF.", "complaint");
 needs("a mistake pointed out", "The petition attached to your last email appears to be a previous version. I cannot review the entire petition again.", "problem");
 needs("a portal problem", "Couldn't see any link to access the portal.", "problem");
-needs("a long message with no question", "I have reviewed the petition. " + "The section on my research impact understates the patents, the conference talks and the industry adoption of my work. ".repeat(5), "long");
+skip("a long message with no question is information only (Low)", "I have reviewed the petition. " + "The section on my research impact understates the patents, the conference talks and the industry adoption of my work. ".repeat(5), "long");
 needs("an Arabic question mark", "متى سيتم تقديم الطلب؟", "question");
 
 skip("a thank-you", "Thank you for the update.", "ack");
@@ -116,6 +116,37 @@ check("thanks, then an action: the action is what is shown", askOf("Thanks for t
 check("a question on its own is not an action", askOf("When will my petition be filed?") === "");
 check("a thank-you asks for nothing", cls("Thank you for the clarification.").ask === "");
 
+// ---------------------------------------------------------------- priority: High, Medium, Low
+const prio = (label, text, want, extra) => { const c = cls(text, extra); check(`priority ${want}: ${label}`, c.priority === want, `${c.priority} (${c.key}; ${c.flags.join(",")}) — ${c.words}`); };
+prio("a complaint", "I have a lot of mistakes in the LOR and I am not happy why I am paying to HOF.", "high");
+prio("a refund request", "Please process my refund, I do not want to continue.", "high");
+prio("a chaser", "Dear Brenda,\n\nAny update please?\n\nRegards,\nUsman", "high");
+prio("\"still waiting for the …\"", "Hello, I am still waiting for the checklist.", "high");
+prio("waiting on someone else is news, not a chaser", "I am still waiting for my employer to sign the letter.", "low");
+prio("a mistake pointed out", "The petition attached to your last email appears to be a previous version. I cannot review the entire petition again.", "high");
+prio("\"urgently\"", "Please share the signed contract urgently.", "high");
+prio("\"asap\"", "Can you send me the invoice asap?", "high");
+prio("biometrics", "When is my biometrics appointment?", "high");
+prio("an interview", "Could you help me prepare for the visa interview next week?", "high");
+prio("a visa expiring", "My visa expires on 30 November, what should I do?", "high");
+prio("a deadline", "What is the deadline for submitting the documents?", "high");
+prio("\"by Monday\"", "Please send the final letters by Monday.", "high");
+prio("the client's own subject line says urgent", "Please advise on the next steps.", "high", { subject: "URGENT: next steps" });
+prio("a question", "When will my petition be filed?", "medium");
+prio("a request", "Ms. Rahima, I updated all the education and passport details. Please advise.", "medium");
+prio("a call request", "Can we have a call.\n\nRegards\nAbdul", "medium");
+prio("\"not urgent\"", "It is not urgent, but could you check the CV format when you have time?", "medium");
+prio("\"no rush\"", "No rush, could you send me the updated draft?", "medium");
+prio("the client's own promise to send something asap", "I will send the remaining documents asap. Could you confirm the address?", "medium");
+prio("a meeting with HOF is not an outside appointment", "Can we book an appointment with you to discuss the petition?", "medium");
+prio("\"looking forward to hearing from you\"", "Could you confirm the fee? Looking forward to hearing from you.", "medium");
+prio("a \"Re:\" subject is the thread's, not the client's", "Please advise on the next steps.", "medium", { subject: "Re: Urgent documents" });
+prio("thanks for urgent help is not urgency", "Thank you for your urgent help. Could you share the receipt?", "medium");
+prio("a thank-you", "Thank you for the update.", "low");
+prio("documents with nothing asked", "Please find the attached letters.", "low", { attachments: true });
+prio("dated words with nothing to answer stay Low", "Attached is my passport copy. My visa expires next month.", "low", { attachments: true });
+prio("a long message with no question", "I have reviewed the petition. " + "The section on my research impact understates the patents, the conference talks and the industry adoption of my work. ".repeat(5), "low");
+
 // ---------------------------------------------------------------- waits and answers
 const em = (at, extra = {}) => ({ at: PKT(at), ownerId: "89930419", ...extra });
 const rp = (at, extra = {}) => ({ at: PKT(at), ownerId: "89930419", ...extra });
@@ -173,15 +204,25 @@ check("addresses are read from a To line", M.addresses("Ali <ALI@x.com>; b@y.co.
     mk("waiting", "2026-10-21T16:00"),
     mk("whatsapp", "2026-10-21T08:00", { waIn: { at: 1 } }), mk("none", "2026-10-15T15:00", { waAfter: { at: 1 } }),
   ];
-  const s = M.sortOut(rows, window, NOW);
+  const s = M.sortOut(rows, window);
   check("an email due exactly at the cut-off is in that morning's report", s.call.length === 1);
   check("one due at yesterday's cut-off is not repeated today", s.due.filter((r) => r.verdict !== "whatsapp").length === 4);
   check("the sections are counted right", s.onTime.length === 1 && s.none.length === 1 && s.late.length === 1);
-  check("older unanswered emails keep appearing", s.still.length === 2);
-  check("…until a connected call reaches the client", !s.still.some((r) => r.callAfter));
-  check("…or a WhatsApp from HOF does", !s.still.some((r) => r.waAfter));
+  check("older emails are not repeated: each is flagged once, on its own day", !Object.entries(s).some(([k, l]) => k !== "due" && l.some((r) => r.due <= window.start)));
   check("emails answered on WhatsApp get their own section", s.whatsapp.length === 1 && s.due.length === 5);
   check("not-yet-due emails go under 'due next'", s.next.length === 1);
+  const p = M.sortOut([mk("none", "2026-10-21T10:00", { priority: "medium", overMs: 9e6 }), mk("none", "2026-10-21T10:30", { priority: "high", overMs: 1 })], window);
+  check("High priority comes first, even with a shorter wait", p.none[0].priority === "high");
+  check("chasing, writing again, a complaint or an urgent request make a wait High; a call request alone is Medium",
+    M.priorityOf(["chaser"], 0, null) === "high" && M.priorityOf([], 1, null) === "high" && M.priorityOf(["urgent"], 0, null) === "high" &&
+    M.priorityOf(["complaint"], 0, null) === "high" && M.priorityOf([], 0, { firstAt: 1 }) === "high" && M.priorityOf(["call"], 0, null) === "medium");
+  const ww = M.buildWaits([em("2026-10-12T10:00"), em("2026-10-20T10:30")], [])[0];
+  const part = M.partToShow(ww, clock, window);
+  const jj = part && M.judge(part.w, { clock, now: NOW });
+  check("a client who writes again after being flagged is judged again, from the new email",
+    part && part.again && part.again.earlier === 1 && part.w.emails.length === 1 && T.fmtWhen(jj.due) === "Wed 21 Oct, 10:30" && jj.verdict === "none", jj && T.fmtWhen(jj.due));
+  check("an old wait with nothing new is not shown again", M.partToShow(M.buildWaits([em("2026-10-12T10:00")], [])[0], clock, window) === null);
+  check("a wait due today is shown as it is", M.partToShow(M.buildWaits([em("2026-10-20T10:30")], [])[0], clock, window).again === null);
   const t = M.perCaseManager(s);
   check("every case manager gets a line, even with nothing due", t.lines.length === Object.keys(SETTINGS.CASE_MANAGERS).length);
   check("on time % leaves out the emails handled by phone or WhatsApp", t.lines.find((l) => l.cm === "Warda Badar").pct === 33 && t.lines.find((l) => l.cm === "Warda Badar").whatsapp === 1);
@@ -192,24 +233,24 @@ check("addresses are read from a To line", M.addresses("Ali <ALI@x.com>; b@y.co.
   const window = T.reportWindow("", NOW);
   const row = (i, verdict) => ({ verdict, cm: Object.values(SETTINGS.CASE_MANAGERS)[i % 14], client: `Client <b>${i}</b>`, clientEmail: `c${i}@gmail.com`,
     subject: "Re: Petition preparation", words: "Any update please? ".repeat(20), start: PKT("2026-10-19T10:00"), due: PKT("2026-10-20T10:00"),
-    flags: i % 5 ? [] : ["complaint"], chased: i % 3, count: 1 + (i % 3), status: "No reply yet — waiting 25 hrs, 1 hr over", onLeave: [], otherCms: [],
+    flags: i % 5 ? [] : ["complaint"], chased: i % 3, priority: i % 2 ? "high" : "medium", count: 1 + (i % 3), status: "No reply yet — waiting 25 hrs, 1 hr over", onLeave: [], otherCms: [],
     dealLink: "https://app.hubspot.com/contacts/23735726/record/0-3/1", contactLink: "", ccOnly: false,
     ask: i % 2 ? "Kindly review the letters and confirm the dates for the session." : "" });
   const many = Array.from({ length: 160 }, (_, i) => row(i, "none"));
-  const s = { due: many, onTime: [], call: many.slice(0, 40).map((r) => ({ ...r, verdict: "call" })), late: many.slice(0, 60), none: many, still: many, next: many };
+  const s = { due: many, onTime: [], call: many.slice(0, 40).map((r) => ({ ...r, verdict: "call" })), late: many.slice(0, 60), none: many, next: many };
   const r = { window, sections: s, byCm: M.perCaseManager(s), notCountedToday: 12, missingYears: ["2027"] };
   const html = fitEmail(r);
   check(`a busy day still fits under Gmail's clipping limit (${Math.round(Buffer.byteLength(html) / 1024)} KB)`, Buffer.byteLength(html) <= MAX_BYTES);
   check("rows that did not fit are pointed to the sheet", /in the attached sheet/.test(html));
-  const flaggedShown = (html.split("Flagged — no reply")[1] || "").split("Flagged — replied late")[0].split("<tr>").length - 2;
+  const flaggedShown = (html.split("High priority — no reply")[1] || "").split("Medium priority — no reply")[0].split("<tr>").length - 2;
   check(`flagged rows are kept before the 'due next' list (${flaggedShown} shown)`, flaggedShown >= 8);
   check("client words are escaped, never run as HTML", !html.includes("Client <b>1</b>") && html.includes("Client &lt;b&gt;1&lt;/b&gt;"));
   check("a missing holiday year is warned about", /No UAE public holidays are listed for 2027/.test(html));
   check("emails HubSpot sent back without text are warned about", /came back from HubSpot with no text/.test(buildEmail({ ...r, unreadPct: 60 })));
-  const quiet = buildEmail({ window, sections: { due: [], onTime: [], call: [], late: [], none: [], still: [], next: [] }, byCm: M.perCaseManager({ due: [], onTime: [], call: [], late: [], none: [], still: [], next: [] }), notCountedToday: 0 });
+  const quiet = buildEmail({ window, sections: { due: [], onTime: [], call: [], late: [], none: [], next: [] }, byCm: M.perCaseManager({ due: [], onTime: [], call: [], late: [], none: [], next: [] }), notCountedToday: 0 });
   check("a day with nothing due says so", /No client emails fell due/.test(quiet));
 
-  const sec = (none, late) => ({ due: [...none, ...late], onTime: [], call: [], late, none, still: [], next: [] });
+  const sec = (none, late) => ({ due: [...none, ...late], onTime: [], call: [], late, none, next: [] });
   const asked = { ...row(1, "none"), ask: "Kindly review the letters and confirm." };
   const h1 = buildEmail({ window, sections: sec([asked], []), byCm: M.perCaseManager(sec([asked], [])), notCountedToday: 0 });
   check("no reply to an action: the email says it was needed and the client must be told",
@@ -220,11 +261,11 @@ check("addresses are read from a To line", M.addresses("Ali <ALI@x.com>; b@y.co.
   check("an action that did get a reply is not marked", !/Action needed: the client asked/.test(h2));
   const waRow = { ...row(3, "whatsapp"), verdict: "whatsapp", status: "WhatsApp voice note Mon 19 Oct, 18:00 by Warda Badar · no email reply yet",
     waIn: { at: PKT("2026-10-19T18:00"), by: "Warda Badar", kind: "voice note", preview: "", line: "HOF Migration" } };
-  const secWa = { due: [waRow], onTime: [], call: [], whatsapp: [waRow], late: [], none: [], still: [], next: [] };
+  const secWa = { due: [waRow], onTime: [], call: [], whatsapp: [waRow], late: [], none: [], next: [] };
   const meshOn = { used: true, on: true, lines: [{ name: "HOF Migration", phone: "+971 4 000 0000" }], since: PKT("2026-10-06T11:00"), chats: 40, messages: 900, hofMessages: 300,
     clients: 1, byNumber: 1, byName: 0, notFound: 0, nameClash: 0, errors: 0, replies: 1, problems: [] };
   const hw = buildEmail({ window, sections: secWa, byCm: M.perCaseManager(secWa), notCountedToday: 0, mesh: meshOn });
-  check("the email has a section for emails answered on WhatsApp", /but answered on WhatsApp/.test(hw) && /A voice note \(not listened to\)/.test(hw) && /WhatsApp, no email/.test(hw) && /on HOF Migration/.test(hw));
+  check("the email has a section for emails answered on WhatsApp", /but answered on WhatsApp/.test(hw) && /A voice note \(not listened to\)/.test(hw) && /call or WhatsApp/.test(hw) && /on HOF Migration/.test(hw));
   check("the email says which WhatsApp number was read, and that case managers' own numbers are not",
     /on the HOF Migration WhatsApp number\)/.test(hw) && /read on the HOF Migration WhatsApp number only; a WhatsApp from any other number, such as a case manager's own, is not seen/.test(hw));
   const hOff = buildEmail({ window, sections: secWa, byCm: M.perCaseManager(secWa), notCountedToday: 0, mesh: { ...meshOn, on: false, why: "the MESH_API_KEY secret is not set" } });
@@ -233,6 +274,16 @@ check("addresses are read from a To line", M.addresses("Ali <ALI@x.com>; b@y.co.
   check("when one of several numbers could not be read, the email says so", /Part of WhatsApp could not be read:<\/b> Key 2 of 2/.test(hPart));
   const img = buildEmail({ window, sections: { ...secWa, whatsapp: [{ ...waRow, waIn: { ...waRow.waIn, kind: "image" } }] }, byCm: M.perCaseManager(secWa), notCountedToday: 0, mesh: meshOn });
   check("an image is 'An image', not 'A image'", /An image/.test(img) && !/A image/.test(img));
+  const hiRow = { ...row(1, "none"), priority: "high", flags: ["urgent"] }, medRow = { ...row(2, "none"), priority: "medium", flags: [], chased: 0 };
+  const hp = buildEmail({ window, sections: sec([hiRow, medRow], []), byCm: M.perCaseManager(sec([hiRow, medRow], [])), notCountedToday: 3 });
+  check("High and Medium have their own sections, High first",
+    hp.indexOf("High priority — no reply") < hp.indexOf("Medium priority — no reply") && /High priority — no reply <span[^>]*>· 1</.test(hp) && /Medium priority — no reply <span[^>]*>· 1</.test(hp));
+  check("the headline and the case manager table split flagged emails by priority", /1 high priority<\/b> and <b>1<\/b> medium/.test(hp) && /High flagged/.test(hp) && /Urgent \/ dated/.test(hp));
+  check("there is no 'still unanswered' list any more", !/Still unanswered|Older, open/.test(hp));
+  check("the email says Low emails are not counted", /Low<\/b> — nothing to answer/.test(hp) && /3 today/.test(hp));
+  const again = { ...hiRow, again: { firstAt: PKT("2026-10-12T10:00"), earlier: 1 } };
+  const ha = buildEmail({ window, sections: sec([again], []), byCm: M.perCaseManager(sec([again], [])), notCountedToday: 0 });
+  check("a client who wrote again is marked, with when they first wrote", /Wrote again/.test(ha) && /First wrote<\/span> Mon 12 Oct, 10:00/.test(ha));
   const whole = { ...row(2, "none"), words: "Please call me tomorrow.", ask: "Please call me tomorrow." };
   const h3 = buildEmail({ window, sections: sec([whole], []), byCm: M.perCaseManager(sec([whole], [])), notCountedToday: 0 });
   check("an action that is the whole email is not quoted twice", (h3.match(/Please call me tomorrow/g) || []).length === 1 && /Action needed/.test(h3));
@@ -243,21 +294,27 @@ check("addresses are read from a To line", M.addresses("Ali <ALI@x.com>; b@y.co.
   try {
     const { buildWorkbook } = require("./4-workbook");
     const window = T.reportWindow("", NOW);
-    const s = { due: [], onTime: [], call: [], late: [], none: [], still: [], next: [] };
-    const wb = await buildWorkbook({ window, sections: s, byCm: M.perCaseManager(s), intake: [{ at: NOW, cm: "Warda Badar", from: "a@b.com", subject: "x", counted: false, reason: "Thank-you or acknowledgement", words: "Thanks" }], notCountedToday: 1, missingYears: [] });
+    const s = { due: [], onTime: [], call: [], late: [], none: [], next: [] };
+    const wb = await buildWorkbook({ window, sections: s, byCm: M.perCaseManager(s), intake: [{ at: NOW, cm: "Warda Badar", from: "a@b.com", subject: "x", counted: false, priority: "low", reason: "Thank-you or acknowledgement", words: "Thanks" },
+      { at: NOW, cm: "Warda Badar", from: "c@d.com", subject: "y", counted: true, priority: "high", flags: ["urgent"], reason: "Asks a question", words: "When is my biometrics appointment?" }], notCountedToday: 1, missingYears: [] });
+    const ig = wb.getWorksheet("All emails received");
+    check("every email received shows its priority", ig.getRow(3).getCell(5).value === "Priority" && ig.getRow(4).getCell(5).value === "Low" && ig.getRow(5).getCell(5).value === "High" && /urgent or dated/.test(ig.getRow(5).getCell(6).value));
     const buf = await wb.xlsx.writeBuffer();
-    check("the sheet builds, with every tab", buf.length > 5000 && ["Summary", "Flagged", "Call, no email", "WhatsApp, no email", "Still unanswered", "Due next", "On time", "All emails received", "How it was checked"].every((n) => wb.getWorksheet(n)));
+    check("the sheet builds, with every tab", buf.length > 5000 && ["Summary", "Flagged", "Call, no email", "WhatsApp, no email", "Due next", "On time", "All emails received", "How it was checked"].every((n) => wb.getWorksheet(n)) && !wb.getWorksheet("Still unanswered"));
     const r1 = { verdict: "none", cm: "Warda Badar", client: "Client", clientEmail: "c@gmail.com", subject: "Letters", words: "Kindly review the letters.", ask: "Kindly review the letters.",
-      start: PKT("2026-10-19T10:00"), due: PKT("2026-10-20T10:00"), flags: [], count: 1, onLeave: [], otherCms: [], dealLink: "", contactLink: "", workMs: 0, overMs: 3600e3 };
-    const s1 = { due: [r1], onTime: [], call: [], late: [], none: [r1], still: [], next: [] };
+      start: PKT("2026-10-19T10:00"), due: PKT("2026-10-20T10:00"), flags: [], count: 1, onLeave: [], otherCms: [], dealLink: "", contactLink: "", workMs: 0, overMs: 3600e3, priority: "high",
+      again: { firstAt: PKT("2026-10-12T10:00"), earlier: 1 } };
+    const s1 = { due: [r1], onTime: [], call: [], late: [], none: [r1], next: [] };
     const wb1 = await buildWorkbook({ window, sections: s1, byCm: M.perCaseManager(s1), intake: [], notCountedToday: 0, missingYears: [] });
     const fl = wb1.getWorksheet("Flagged");
     const colOf = (ws, name) => ws.getRow(3).values.indexOf(name);
     check("the sheet shows the action the client asked for, and says to confirm it",
       colOf(fl, "Action the client asked for") > 0 && fl.getRow(4).getCell(colOf(fl, "Action the client asked for")).value === "Kindly review the letters." &&
       /confirm it to the client/.test(String(fl.getRow(4).getCell(colOf(fl, "Notes")).value)));
+    check("the sheet shows each row's priority, and a client who wrote again", fl.getRow(4).getCell(colOf(fl, "Priority")).value === "High" &&
+      /Client wrote again: their first email \(Mon 12 Oct, 10:00\)/.test(String(fl.getRow(4).getCell(colOf(fl, "Notes")).value)));
     const rw = { ...r1, verdict: "whatsapp", waIn: { at: PKT("2026-10-19T18:00"), by: "Warda Badar", kind: "voice note", preview: "", line: "HOF Migration" }, waChecked: true, waFound: "number" };
-    const s2 = { due: [rw], onTime: [], call: [], whatsapp: [rw], late: [], none: [], still: [], next: [] };
+    const s2 = { due: [rw], onTime: [], call: [], whatsapp: [rw], late: [], none: [], next: [] };
     const wb2 = await buildWorkbook({ window, sections: s2, byCm: M.perCaseManager(s2), intake: [], notCountedToday: 0, missingYears: [],
       mesh: { used: true, on: true, lines: [{ name: "HOF Migration", phone: "+971 4 000 0000" }], since: PKT("2026-10-06T11:00"), chats: 40, messages: 900, hofMessages: 300,
         clients: 3, byNumber: 2, byName: 0, notFound: 1, nameClash: 0, errors: 0, replies: 1, problems: [] } });
@@ -269,7 +326,7 @@ check("addresses are read from a To line", M.addresses("Ali <ALI@x.com>; b@y.co.
     check("the sheet says which number was read, and how many clients were found", /read WhatsApp on HOF Migration \(\+971 4 000 0000\): 40 chats and 900 messages/.test(how) &&
       /3 clients looked up — 2 found by phone number/.test(how) && /such as a case manager's own, is not seen/.test(how));
     const rn = { ...r1, waFound: "none" };
-    const s3 = { due: [rn], onTime: [], call: [], late: [], none: [rn], still: [], next: [] };
+    const s3 = { due: [rn], onTime: [], call: [], late: [], none: [rn], next: [] };
     const wb3 = await buildWorkbook({ window, sections: s3, byCm: M.perCaseManager(s3), intake: [], notCountedToday: 0, missingYears: [] });
     const f3 = wb3.getWorksheet("Flagged");
     check("a flagged client with no WhatsApp chat says so", /No WhatsApp chat with this client on the number Mesh checks/.test(String(f3.getRow(4).getCell(colOf(f3, "Notes")).value)));
