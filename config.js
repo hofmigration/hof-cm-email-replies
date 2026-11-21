@@ -60,10 +60,11 @@ const SETTINGS = {
 
   // ---- the report ----
   // Each morning's report covers the emails whose 24 hours ended between yesterday's cut-off
-  // and today's, so every email is judged exactly once. Anything still unanswered keeps
-  // reappearing under "Still unanswered" for STILL_OPEN_DAYS.
+  // and today's, so every email is flagged once, on the day its 24 hours end. If the client
+  // writes again and that email also goes unanswered for 24 hours, it is flagged again, as
+  // High (they are chasing).
   REPORT_HOUR: 11,             // the cut-off, Pakistan time
-  STILL_OPEN_DAYS: 14,
+  LOOK_BACK_DAYS: 17,          // how far back emails are read, so a client's earlier emails and HOF's replies are known
   ROWS_PER_SECTION: 40,        // rows shown per section in the email; every row is in the sheet
   REPORT_TO: "razaali@hofmigration.com",
   CC: [],                      // e.g. ["adnan@hofmigration.com"] — only after hofmigration.com is verified in Resend
@@ -111,19 +112,24 @@ const SETTINGS = {
   MESH_PEOPLE_SENDERS: ["WhatsApp Business app (phone)", "Team (outside Mesh)"],
   DEFAULT_COUNTRY: "AE",       // a number saved with no country code is read as a UAE number
 
-  // ---- which emails need a reply ----
-  // Not counted: anything from HOF staff, automatic messages, thank-yous, and emails that
-  // only send documents or news with nothing asked (those need an acknowledgement, not a
-  // reply). Counted: questions, requests, chasers, complaints, call requests, and long
-  // messages with no clear question (counted to be safe). Every email that was NOT counted
-  // is listed in the sheet with the reason, so the rules can be checked.
+  // ---- which emails need a reply, and their priority ----
+  // High: needs a reply, and is a complaint or refund, a chaser (the client wrote again
+  //   because nobody replied), a problem or mistake pointed out, or urgent or tied to a date
+  //   (a deadline, an appointment, biometrics, an interview, a visa or passport expiring).
+  // Medium: any other question, request or call request.
+  // Both must be answered within REPLY_HOURS; High is listed first, in red.
+  // Low: nothing to answer - anything from HOF staff, automatic messages, thank-yous, emails
+  //   that only send documents or information with nothing asked (long ones too). Low emails
+  //   are not counted and not shown in the email; each is listed in the sheet's
+  //   "All emails received" tab with the reason, so the rules can be checked.
   INTERNAL_DOMAINS: ["hofmigration.com", "hof-global.com"],
   AUTOMATED_SENDERS: /(^|[._-])(no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|alerts?|newsletters?|calendar-notification|drive-shares|auto-?confirm|system)([._-]|@)/i,
   AUTOMATED_DOMAINS: ["docusign.net", "docusign.com", "zoom.us", "calendly.com", "hubspot.com", "hs-email.com",
     "linkedin.com", "facebookmail.com", "carnegieevaluations.com", "uscis.dhs.gov", "fireflies.ai"],
   AUTOMATED_SUBJECTS: /^\s*(automatic reply|auto-?reply|autoreply|out of (the )?office|ooo\b|undeliverable|undelivered|delivery status notification|mail delivery (failed|subsystem)|returned mail|read:|accepted:|declined:|tentative:|tentatively accepted|invitation:|updated invitation|canceled event|cancelled event|new event:)/i,
   COUNT_DOCUMENTS_ONLY: false, // true = documents sent with nothing asked also need a reply in 24 hours
-  LONG_MESSAGE_CHARS: 500,     // a message this long with no clear question is counted, to be safe
+  COUNT_LONG_MESSAGES: false,  // true = a long message with no question or request is Medium instead of Low
+  LONG_MESSAGE_CHARS: 500,     // how long "a long message" is
   ACK_MAX_CHARS: 200,          // a thank-you longer than this is read as a real message
 
   // ---- HubSpot ----
