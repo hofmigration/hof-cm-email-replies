@@ -1,4 +1,4 @@
-// 2-classify.js — does a client's email need a reply?
+// 2-classify.js — does a client's email need a reply, and how urgently?
 //
 // Only the client's own new words are read: the quoted thread underneath, signatures,
 // "Sent from my iPhone" and legal footers are cut off first. Then, in this order:
@@ -6,9 +6,19 @@
 //   counted     — a complaint, a chaser, a problem or mistake pointed out, a call or
 //                 meeting request, a question, a request
 //   not counted — a thank-you or acknowledgement
-//   counted     — a long message with no clear question (counted to be safe)
+//   not counted — a long message with no question or request (information only)
 //   not counted — documents or news sent with nothing asked (an acknowledgement is enough)
 // Every decision carries a plain reason, which the sheet shows next to the email.
+//
+// Every email gets a priority:
+//   High   — needs a reply, and is a complaint or refund, a chaser, a problem or mistake
+//            pointed out, or urgent or tied to a date (a deadline, an appointment,
+//            biometrics, an interview, a visa or passport expiring)
+//   Medium — needs a reply: any other question or request
+//   Low    — nothing to answer; not counted, and left out of the report's email
+// Urgent or dated words raise an email that needs a reply to High; on their own they do not
+// make an email need one. "Not urgent", "no rush" and the client's own promises ("I will
+// send it asap") do not count as urgent.
 //
 // Before anything is read, a thank-you and what it thanks for are taken out ("Thank you for
 // the clarification" asks for nothing), as are polite offers, "keep me posted" in an email
@@ -127,10 +137,30 @@ const OFFERS = [
 
 const SIGNALS = {
   complaint: /\b(not happy|unhappy|disappoint\w*|frustrat\w*|unacceptable|unprofessional|(i|we) (want to |would like to |wish to |am going to |will )?(complain|raise a complaint|file a complaint|lodge a complaint)|my complaint|formal complaint|refund\w*|payment return|money back|return (my|the) (payment|money|fees?)|(will|would|have to|going to|shall|must) escalate|escalate (this|the matter|it) to|worst|shock(ed|ing)|waste of (my )?(time|money)|cancel (my|the|this) (case|contract|file|service|agreement|application)|legal action|very upset|poor (service|response|communication)|no(body| one) (is )?(respond|repl|answer|pick)\w*|purpose of hiring|not satisfied|dissatisfied|negligen\w*|careless|lost (my |all )?(hope|trust|faith|confidence)|serious concern|concerned about the delay)\b/i,
-  chaser: /\b(any (update|news|progress|feedback|response|reply|information)|(still|yet) (waiting|awaiting) (for |on )?(your|you|a reply|a response|an update|any update|feedback|the (reply|response|update|feedback))|(have not|haven'?t|did not|didn'?t|not yet|never) (heard back|heard from you|got (a|any) (reply|response))|(have not|haven'?t|did not|didn'?t|not yet) (received|got|get) (your|any|a) (reply|response|update|feedback|email|call|confirmation)|no (reply|response|update|feedback|answer)( yet| so far| from you)|it'?s been (\d+|a|two|three|four|five|several|many) (days?|weeks?|months?)|(\d+|two|three|four|five|several) (days?|weeks?) (have )?(passed|now|already)|(gentle |kind |friendly |second |final |another )?reminder|(i am|i'm|i’m|just|again|once again|writing to|this is to)\s+(formally\s+)?follow(ing)?[ -]?up|follow(ing)?[ -]?up (on|regarding|about) (my|our) (case|application|petition|file|previous|earlier|request|query|email)|(second|2nd|third|3rd|another) (email|time|follow)|awaiting your)\b/i,
+  chaser: /\b(any (update|news|progress|feedback|response|reply|information)|(still|yet) (waiting|awaiting) (for |on )?(your|you|a reply|a response|an update|any update|feedback|the (reply|response|update|feedback))|still (waiting|awaiting) (for|on) (the|a|an|any)\b|(have not|haven'?t|did not|didn'?t|not yet|never) (heard back|heard from you|got (a|any) (reply|response))|(have not|haven'?t|did not|didn'?t|not yet) (received|got|get) (your|any|a) (reply|response|update|feedback|email|call|confirmation)|no (reply|response|update|feedback|answer)( yet| so far| from you)|it'?s been (\d+|a|two|three|four|five|several|many) (days?|weeks?|months?)|(\d+|two|three|four|five|several) (days?|weeks?) (have )?(passed|now|already)|(gentle |kind |friendly |second |final |another )?reminder|(i am|i'm|i’m|just|again|once again|writing to|this is to)\s+(formally\s+)?follow(ing)?[ -]?up|follow(ing)?[ -]?up (on|regarding|about) (my|our) (case|application|petition|file|previous|earlier|request|query|email)|(second|2nd|third|3rd|another) (email|time|follow)|awaiting your)\b/i,
   problem: /\b(errors?|incorrect|inaccura\w*|discrepanc\w*|inconsisten\w*|wrong (file|document|name|date|details|information|info|version|dates|designation|names|address|spelling)|previous version|same files?|not (been )?(reviewed|reflected|included|updated|corrected|incorporated|addressed)|(may|might|did) not have (been )?(reviewed|included|considered|added|updated|reflected|shared)|(needs?|require[sd]?|requiring) (correction|corrections|changes|amendment|amendments|refinement|revision)|you (didn'?t|did not|have not|haven'?t|forgot|missed)|(couldn'?t|could not|can'?t|cannot|unable to|not able to|haven'?t been able to|was not able to) (see|find|access|open|log ?in|login|upload|download|view|reach|sign|submit|pay|make|complete|get)|(is|are|was|were) (locked|not working|broken|not opening|not loading|expired)|(i am|i'm) (worried|concerned|confused|struggling)|(i hope|hopefully) (it|this|that) (will not|won'?t|does not|doesn'?t|would not|wouldn'?t) (affect|effect|impact|make any|cause|delay|harm))\b/i,
   call: /\b(call me|give me a (call|ring)|call (me )?back|callback|please call|(have|arrange|schedule|book|set up|setup|fix) (a |an )?(quick |short |joint |zoom |teams |google meet |video |phone )?(call|meeting|session|zoom|appointment|slot)|(joint|zoom|teams|online|video) (meeting|call)|meeting (today|tomorrow|on \w+)|(can|could|may|shall) (i|we) (talk|speak|connect|meet|discuss)|(want|like|need|would like|wish) to (talk|speak|discuss|connect|meet)|let'?s (talk|speak|connect|meet|discuss|have a call)|(i|we) can meet|(let'?s|let us|can we|could we|shall we) connect|connect(ing)? with you (on|at|tomorrow|today|this|next)|(meet|meeting|zoom|invite) link|(send|share) (me |us )?the (link|invite)|(available|free) (for|to) (a )?(call|talk|speak)|whats ?app call)\b|\b(available|free)\b[^.!?\n]{0,60}\b(either\b|between\b|\d{1,2}([:.]\d{2})?\s*(am|pm)?\s*(-|to|–)\s*\d{1,2})/i,
 };
+// ---- urgent or tied to a date: raises an email that needs a reply to High ----
+const URGENT = /\b(urgent(ly)?|urgency|asap|a\.s\.a\.p\.?|as soon as possible|emergency|at the earliest|on (an )?urgent basis|on priority( basis)?|top priority|high priority|time[- ]sensitive|right away|without (any )?(further )?delay|immediate (action|attention|response|reply|help|assistance|support)|(please|kindly|pls|plz|need|needs|needed|require[sd]?|must|should)\b[^.?!\n]{0,40}\bimmediately)\b/i;
+const NOT_URGENT = /\b(not|no|nothing|isn'?t|aren'?t)\s+(very |that |so |super |too |really )?(urgent|an emergency|immediate)\b|\bno (rush|hurry|urgency|pressure)\b|\bearliest convenience\b|\bwhenever (you|it is|it's) (can|convenient|possible|free|get a chance)\b/i;
+const TIME_BOUND = new RegExp("\\b(" + [
+  "deadlines?", "due date", "last date", "cut-?off date", "expir(y|e|es|ed|ing|ation)",
+  "biometrics?", "interviews?", "medicals", "medical (exam|examination|test|appointment)s?", "travel date", "flights?",
+  "rfe", "request for evidence",
+  // an appointment outside HOF; "book an appointment with you" is a meeting request, not a date
+  "(visa|embassy|consulate|vfs|biometrics?|medical|uscis|ircc|vac|passport|fingerprints?|my|the|our|her|his) appointments?",
+  "appointments? (date|letter|confirmation|slot|is|was|on|at|for)",
+  "(by|before|no later than) (today|tonight|tomorrow|(this|next) (week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|eod|eow|end of (the )?(day|week|month)|\\d{1,2}(st|nd|rd|th)? (of )?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \\d{1,2}(st|nd|rd|th)?\\b|\\d{1,2}[/.-]\\d{1,2}([/.-]\\d{2,4})?)",
+].join("|") + ")\\b", "i");
+// the client's own promises are not urgency for HOF: "I will send it asap", "we'll share them by Monday"
+const OWN_PROMISE = /\b(i|we)('ll|'d|\s+(will|shall|would|can|could|am going to|are going to|am trying to|will try to|try to))\s+(try to\s+|also\s+|then\s+|surely\s+|definitely\s+)?(send|share|submit|upload|provide|forward|email|mail|give|complete|arrange|get|do|finish|sign|update|call|reply|revert|respond|pay|make|bring|collect|deliver|courier|fill|prepare|check|confirm|inform|let you know|book|schedule|review|reach)\b[^.?!\n]*/gi;
+function urgentIn(text) {
+  const s = String(text || "").replace(OWN_PROMISE, " ");
+  // "not urgent" switches off the urgent words, but not a real date
+  return (!NOT_URGENT.test(s) && URGENT.test(s)) || TIME_BOUND.test(s);
+}
+
 const QUESTION = /[?؟]/;
 const AUX_QUESTION = /(^|[.!\n:;]\s*|\b(and|but|also|so|now)\s+)(do|does|did|is|are|was|were|have|has|can|could|will|would|shall|should|may) (you|we|i|it|there|my|the|this|they|these|those|your|he|she)\b/i;
 // "Thank you for the update, please keep me posted" / "Noted, let me know once it is
@@ -215,6 +245,7 @@ function strip(t) {
 function read(t) {
   const { polite, s } = strip(t);
   const flags = Object.keys(SIGNALS).filter((k) => SIGNALS[k].test(k === "complaint" ? polite : s));
+  if (urgentIn(s)) flags.push("urgent");
   const question = QUESTION.test(s) || AUX_QUESTION.test(s);
   const request = REQUEST.some((re) => re.test(s));
   const rest = s.replace(/[\s.,;:!?-]+/g, " ").trim();
@@ -245,18 +276,29 @@ const REASONS = {
   call: "Asks for a call or meeting",
   question: "Asks a question",
   request: "Asks for something",
-  long: "Long message with no clear question — counted to be safe",
+  long: "Long message with no question or request — information only",
+  longCounted: "Long message with no clear question — counted (COUNT_LONG_MESSAGES is on)",
   documentsCounted: "Documents sent — counted (COUNT_DOCUMENTS_ONLY is on)",
   subject: "The subject line asks something",
 };
 const PRIORITY = ["complaint", "chaser", "problem", "call"];
+// what makes an email that needs a reply High; everything else that needs one is Medium
+const HIGH = ["complaint", "chaser", "problem", "urgent"];
+const PRIORITY_NAME = { high: "High", medium: "Medium", low: "Low" };
 
 // email: { from, subject, text, html, attachments (bool) }
-// -> { needs, key, reason, flags[], words (the client's new words, for the report) }
+// -> { needs, key, reason, flags[], words (the client's new words), ask, priority }
 function classify(email) {
   const from = String(email.from || "").toLowerCase();
   const subject = String(email.subject || "");
-  const out = (needs, key, flags = [], words = "") => ({ needs, key, reason: REASONS[key], flags, words, ask: needs ? askOf(words) : "" });
+  // the client's own subject line ("URGENT: biometrics on Monday") counts towards urgency too;
+  // a "Re:" subject is the thread's, not theirs
+  const urgentSubject = !REPLY_SUBJECT.test(subject) && urgentIn(cleanSubject(subject));
+  const out = (needs, key, flags = [], words = "") => {
+    const f = needs && urgentSubject && !flags.includes("urgent") ? [...flags, "urgent"] : flags;
+    return { needs, key, reason: REASONS[key], flags: f, words, ask: needs ? askOf(words) : "",
+      priority: !needs ? "low" : HIGH.some((k) => f.includes(k)) ? "high" : "medium" };
+  };
 
   if (isInternal(from)) return out(false, "internal");
   if (SETTINGS.AUTOMATED_SENDERS.test(from) || SETTINGS.AUTOMATED_DOMAINS.some((d) => domainOf(from) === d || domainOf(from).endsWith("." + d)))
@@ -286,7 +328,7 @@ function classify(email) {
   // a thank-you, even a long one, as long as what is left once the thanks are taken out is short
   const shortOnceThanked = a.rest.length <= SETTINGS.ACK_MAX_CHARS && words.length < SETTINGS.LONG_MESSAGE_CHARS;
   if ((words.length <= SETTINGS.ACK_MAX_CHARS || shortOnceThanked) && ACK.test(words)) return out(false, "ack", [], words);
-  if (words.length >= SETTINGS.LONG_MESSAGE_CHARS) return out(true, "long", [], words);
+  if (words.length >= SETTINGS.LONG_MESSAGE_CHARS) return out(!!SETTINGS.COUNT_LONG_MESSAGES, SETTINGS.COUNT_LONG_MESSAGES ? "longCounted" : "long", [], words);
   if (DOCS.test(words) || email.attachments)
     return out(SETTINGS.COUNT_DOCUMENTS_ONLY, SETTINGS.COUNT_DOCUMENTS_ONLY ? "documentsCounted" : "documents", [], words);
   return out(false, "update", [], words);
@@ -297,4 +339,4 @@ const snippet = (s, n = 180) => {
   return t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t;
 };
 
-module.exports = { classify, newWords, core, htmlToText, isInternal, cleanSubject, snippet, askOf, REASONS };
+module.exports = { classify, newWords, core, htmlToText, isInternal, cleanSubject, snippet, askOf, urgentIn, REASONS, HIGH, PRIORITY_NAME };
